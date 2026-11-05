@@ -69,6 +69,7 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -182,6 +183,16 @@ private fun LomixScreen(controller: PlayerController) {
     var vinyl by remember { mutableStateOf(controller.vinylOn) }
     var cassette by remember { mutableStateOf(controller.cassetteOn) }
 
+    var beatsOn by remember { mutableStateOf(controller.beatsOn) }
+    var beatsStyle by remember { mutableStateOf(controller.beatsStyle) }
+    var beatsVolume by remember { mutableIntStateOf(controller.beatsVolumePercent) }
+    var bpmAdjust by remember { mutableDoubleStateOf(controller.bpmAdjust) }
+    var beatsBpm by remember { mutableStateOf(controller.beatInfo?.bpm) }
+    var beatsDetecting by remember { mutableStateOf(controller.beatsDetecting) }
+    // Same guard as the sleep timer: the poll adopts the controller's
+    // adjust only when it changed on its own (a new song resets it to 0).
+    var lastBeatsAdjustPushed by remember { mutableDoubleStateOf(controller.bpmAdjust) }
+
     var rainChoice by remember { mutableStateOf(controller.rainChoice) }
     var rainVolume by remember { mutableIntStateOf(controller.rainVolumePercent) }
 
@@ -224,6 +235,10 @@ private fun LomixScreen(controller: PlayerController) {
     LaunchedEffect(rainChoice, rainVolume) { controller.applyRain(rainChoice, rainVolume) }
     LaunchedEffect(vinyl) { controller.applyVinyl(vinyl) }
     LaunchedEffect(cassette) { controller.applyCassette(cassette) }
+    LaunchedEffect(beatsOn, beatsStyle, beatsVolume, bpmAdjust) {
+        lastBeatsAdjustPushed = bpmAdjust
+        controller.applyBeats(beatsOn, beatsStyle, beatsVolume, bpmAdjust)
+    }
     LaunchedEffect(sleepMinutes) {
         lastSleepPushed = sleepMinutes
         controller.applySleepTimer(sleepMinutes)
@@ -252,6 +267,12 @@ private fun LomixScreen(controller: PlayerController) {
                 lastSleepPushed = controller.sleepMinutes
             }
             sleepRemainingMs = controller.sleepRemainingMs
+            beatsBpm = controller.beatInfo?.bpm
+            beatsDetecting = controller.beatsDetecting
+            if (controller.bpmAdjust != lastBeatsAdjustPushed) {
+                bpmAdjust = controller.bpmAdjust
+                lastBeatsAdjustPushed = controller.bpmAdjust
+            }
             delay(500)
         }
     }
@@ -262,7 +283,8 @@ private fun LomixScreen(controller: PlayerController) {
         if (naram) "Naram" else null,
         if (geela) "Geela" else null,
         if (vinyl) "Vinyl" else null,
-        if (cassette) "Cassette" else null
+        if (cassette) "Cassette" else null,
+        if (beatsOn) "Beats " + beatsStyleLabel(beatsStyle) else null
     )
     val mixText = buildString {
         append("%.2f".format(speed)).append("x · ")
@@ -440,7 +462,8 @@ private fun LomixScreen(controller: PlayerController) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 PillTab("Speed", Icons.Filled.Speed, selectedTab == 0, Modifier.weight(1f)) { selectedTab = 0 }
                 PillTab("Lofi Rang", Icons.Filled.GraphicEq, selectedTab == 1, Modifier.weight(1f)) { selectedTab = 1 }
-                PillTab("Baarish", Icons.Filled.WaterDrop, selectedTab == 2, Modifier.weight(1f)) { selectedTab = 2 }
+                PillTab("Beats", Icons.Filled.MusicNote, selectedTab == 2, Modifier.weight(1f)) { selectedTab = 2 }
+                PillTab("Baarish", Icons.Filled.WaterDrop, selectedTab == 3, Modifier.weight(1f)) { selectedTab = 3 }
             }
 
             Spacer(Modifier.height(14.dp))
@@ -467,6 +490,19 @@ private fun LomixScreen(controller: PlayerController) {
                                     "cassette" -> cassette = !cassette
                                 }
                             }
+                        )
+                        2 -> BeatsPanel(
+                            on = beatsOn,
+                            style = beatsStyle,
+                            volume = beatsVolume,
+                            bpm = beatsBpm,
+                            detecting = beatsDetecting,
+                            adjust = bpmAdjust,
+                            hasSong = hasSong,
+                            onToggle = { beatsOn = !beatsOn },
+                            onStyle = { beatsStyle = it },
+                            onVolume = { beatsVolume = it },
+                            onAdjust = { bpmAdjust = it }
                         )
                         else -> RainPanel(
                             choice = rainChoice,
@@ -526,12 +562,12 @@ private fun PillTab(
                 icon,
                 contentDescription = null,
                 tint = if (selected) Color.White else AccentBlue,
-                modifier = Modifier.size(19.dp)
+                modifier = Modifier.size(17.dp)
             )
-            Spacer(Modifier.width(6.dp))
+            Spacer(Modifier.width(5.dp))
             Text(
                 label,
-                fontSize = 14.sp,
+                fontSize = 13.sp,
                 fontWeight = FontWeight.Bold,
                 color = if (selected) Color.White else Ink
             )
@@ -698,6 +734,102 @@ private fun RainOption(
         }
     }
     Spacer(Modifier.height(8.dp))
+}
+
+@Composable
+private fun BeatsPanel(
+    on: Boolean,
+    style: BeatsStyle,
+    volume: Int,
+    bpm: Double?,
+    detecting: Boolean,
+    adjust: Double,
+    hasSong: Boolean,
+    onToggle: () -> Unit,
+    onStyle: (BeatsStyle) -> Unit,
+    onVolume: (Int) -> Unit,
+    onAdjust: (Double) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        FxToggleCard(
+            "Beats", "Khud sync honay walay lofi drums, ganay ke neeche",
+            Icons.Filled.MusicNote, on
+        ) { onToggle() }
+
+        val status = when {
+            !hasSong -> "Pehle gana chunein — phir taal khud dhoondhi jayegi"
+            detecting -> "Taal dhoond raha hai… chand second lag sakte hain"
+            bpm != null -> "Taal mil gayi: %.1f BPM — beats khud sync hain".format((bpm ?: 0.0) + adjust)
+            else -> "Taal khud nahi mili — neeche se BPM haath se theek karein"
+        }
+        Text(status, fontSize = 12.sp, color = MutedInk)
+
+        Text("Style", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Ink)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            BeatsChip("Balanced", style == BeatsStyle.BALANCED) { onStyle(BeatsStyle.BALANCED) }
+            BeatsChip("Warm", style == BeatsStyle.WARM) { onStyle(BeatsStyle.WARM) }
+            BeatsChip("Bass Boost", style == BeatsStyle.BASS_BOOST) { onStyle(BeatsStyle.BASS_BOOST) }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            BeatsChip("Smooth", style == BeatsStyle.SMOOTH) { onStyle(BeatsStyle.SMOOTH) }
+            BeatsChip("Dynamic", style == BeatsStyle.DYNAMIC) { onStyle(BeatsStyle.DYNAMIC) }
+        }
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Filled.VolumeUp, contentDescription = null, tint = MutedInk, modifier = Modifier.size(19.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Beats ki awaz", fontSize = 13.sp, color = Ink, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.weight(1f))
+            Text("$volume%", fontSize = 13.sp, color = MutedInk)
+        }
+        Slider(
+            value = volume.toFloat(),
+            onValueChange = { onVolume(it.toInt()) },
+            valueRange = 0f..100f,
+            colors = SliderDefaults.colors(thumbColor = AccentBlue, activeTrackColor = AccentBlue),
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Taal theek karein", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Ink)
+            Spacer(Modifier.weight(1f))
+            OutlinedButton(
+                onClick = { onAdjust(adjust - 0.5) },
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
+            ) { Text("−") }
+            Spacer(Modifier.width(8.dp))
+            Text("%.1f".format((bpm ?: 90.0) + adjust), fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Ink)
+            Spacer(Modifier.width(8.dp))
+            OutlinedButton(
+                onClick = { onAdjust(adjust + 0.5) },
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
+            ) { Text("+") }
+        }
+        Text(
+            "Agar beats ganay se aage ya peeche lagein to − / + se taal mila lein. Speed badalne par beats khud nayi speed se mil jati hain.",
+            fontSize = 12.sp,
+            color = MutedInk
+        )
+    }
+}
+
+@Composable
+private fun BeatsChip(label: String, active: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(if (active) AccentBlue else IdleTint)
+            .border(1.dp, if (active) AccentBlue else CardBorder, RoundedCornerShape(50))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 7.dp)
+    ) {
+        Text(
+            label,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+            color = if (active) Color.White else Ink
+        )
+    }
 }
 
 private fun formatTime(ms: Long): String {

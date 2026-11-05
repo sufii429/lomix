@@ -9,10 +9,23 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
+import kotlin.math.abs
 import kotlin.math.sin
 
 /** Rain choices of the "Baarish" tab. */
 enum class RainChoice { NONE, GENTLE, HEAVY, TIN }
+
+/** Beats styles of the "Beats" tab; the EQ curves live in [BeatsFx]. */
+enum class BeatsStyle { BALANCED, WARM, BASS_BOOST, SMOOTH, DYNAMIC }
+
+/** Display label for a beats style (UI chips + notification summary). */
+fun beatsStyleLabel(style: BeatsStyle): String = when (style) {
+    BeatsStyle.BALANCED -> "Balanced"
+    BeatsStyle.WARM -> "Warm"
+    BeatsStyle.BASS_BOOST -> "Bass Boost"
+    BeatsStyle.SMOOTH -> "Smooth"
+    BeatsStyle.DYNAMIC -> "Dynamic"
+}
 
 /**
  * Owns the ExoPlayers and keeps them in sync behind ONE master Play/Pause:
@@ -22,6 +35,10 @@ enum class RainChoice { NONE, GENTLE, HEAVY, TIN }
  *  - vinylPlayer   : a looping bundled crackle file, fixed low volume.
  *  - cassettePlayer: a looping bundled tape-hiss file for the Cassette
  *                    effect (which also wobbles the song's pitch slightly).
+ *  - beatsPlayer   : a looping bundled drum loop (v1.2), time-stretched
+ *                    to the detected song tempo and phase-locked to the
+ *                    song's beat grid by a periodic alignment ticker;
+ *                    its character comes from [BeatsFx] style curves.
  *
  * Since v1.1 this controller lives in [PlaybackService] (not the Activity),
  * so playback continues with the screen off or the app swiped away, and it
@@ -33,6 +50,8 @@ enum class RainChoice { NONE, GENTLE, HEAVY, TIN }
  * data source resolves from the app assets.
  */
 class PlayerController(context: Context) {
+
+    private val appContext: Context = context.applicationContext
 
     val songPlayer: ExoPlayer = ExoPlayer.Builder(context.applicationContext).build()
 
@@ -50,8 +69,16 @@ class PlayerController(context: Context) {
         volume = CASSETTE_VOLUME
     }
 
+    /** Looping drum loop for the Beats layer; rate follows the song tempo. */
+    private val beatsPlayer: ExoPlayer = ExoPlayer.Builder(context.applicationContext).build().apply {
+        repeatMode = Player.REPEAT_MODE_ALL
+    }
+
     /** Lofi effects attached to the song player's audio session. */
     val fx = FxController()
+
+    /** Style EQ attached to the beats player's audio session. */
+    private val beatsFx = BeatsFx()
 
     // ---- Mix state (the single source of truth since v1.1) ---------------
     var songUri: Uri? = null
@@ -74,6 +101,38 @@ class PlayerController(context: Context) {
         private set
     var rainVolumePercent: Int = 40
         private set
+
+    // ---- Beats state (v1.2) ------------------------------------------------
+    var beatsOn: Boolean = false
+        private set
+    var beatsStyle: BeatsStyle = BeatsStyle.BALANCED
+        private set
+    var beatsVolumePercent: Int = 70
+        private set
+
+    /** Detected grid for the current song; null while unknown/failed. */
+    var beatInfo: BeatInfo? = null
+        private set
+
+    /** True while the background tempo detection is running. */
+    var beatsDetecting: Boolean = false
+        private set
+
+    /** Mazeen's manual tempo correction in BPM (the +/- in the Beats tab). */
+    var bpmAdjust: Double = 0.0
+        private set
+
+    /** Which loop pattern is loaded: true = dynamic (beats_b). */
+    private var beatsLoadedDynamic: Boolean? = null
+
+    /** Incremented per song so stale detection results are dropped. */
+    private var detectGeneration: Int = 0
+
+    /** The tempo the beats must follow: detected (or fallback) + adjust. */
+    fun effectiveBpm(): Double {
+        val base = beatInfo?.bpm ?: FALLBACK_BPM
+        return (base + bpmAdjust).coerceIn(40.0, 200.0)
+    }
 
     /** Which rain file is currently loaded into rainPlayer (null = none yet). */
     private var rainLoaded: RainChoice? = null
@@ -156,7 +215,35 @@ class PlayerController(context: Context) {
         // Re-apply the current parameters on the fresh media item.
         songPlayer.playbackParameters = PlaybackParameters(speed, 1.0f)
         fx.apply(garam, naram, geela)
+        startBeatDetection(uri)
         onStateChanged?.invoke()
+    }
+
+    /** Kick off tempo detection for [uri] on a background thread. */
+    private fun startBeatDetection(uri: Uri) {
+        val generation = ++detectGeneration
+        beatInfo = null
+        bpmAdjust = 0.0
+        beatsDetecting = true
+        stopBeatsTicker()
+        beatsPlayer.pause()
+        Thread {
+            val info = BeatDetector.detect(appContext, uri)
+            handler.post {
+                if (generation == detectGeneration && songUri == uri) {
+                    beatsDetecting = false
+                    beatInfo = info
+                    if (beatsOn) {
+                        ensureBeatsReady()
+                        if (isPlaying) {
+                            beatsPlayer.play()
+                            startBeatsTicker()
+                        }
+                    }
+                    onStateChanged?.invoke()
+                }
+            }
+        }.start()
     }
 
     /** Speed change with pitch locked at 1.0 (wobble re-applies itself). */
@@ -225,12 +312,115 @@ class PlayerController(context: Context) {
         onStateChanged?.invoke()
     }
 
+    // ---- Beats layer (v1.2) ------------------------------------------------
+
+    fun applyBeats(on: Boolean, style: BeatsStyle, volumePercent: Int, adjust: Double) {
+        beatsOn = on
+        beatsStyle = style
+        beatsVolumePercent = volumePercent
+        bpmAdjust = adjust
+        if (!on) {
+            stopBeatsTicker()
+            beatsPlayer.pause()
+            onStateChanged?.invoke()
+            return
+        }
+        ensureBeatsReady()
+        if (isPlaying) {
+            beatsPlayer.play()
+            startBeatsTicker()
+        } else {
+            beatsPlayer.pause()
+        }
+        onStateChanged?.invoke()
+    }
+
+    /** Load the loop for the current style, set rate, volume and EQ. */
+    private fun ensureBeatsReady() {
+        val dynamic = beatsStyle == BeatsStyle.DYNAMIC
+        if (beatsLoadedDynamic != dynamic) {
+            beatsPlayer.setMediaItem(
+                MediaItem.fromUri(if (dynamic) BEATS_DYNAMIC_ASSET else BEATS_STANDARD_ASSET)
+            )
+            beatsPlayer.prepare()
+            beatsLoadedDynamic = dynamic
+            beatsFx.attach(beatsPlayer.audioSessionId)
+        }
+        beatsFx.apply(beatsStyle)
+        beatsPlayer.volume = (beatsVolumePercent / 100f) * BeatsFx.levelFactor(beatsStyle)
+        updateBeatsRate()
+    }
+
+    private fun updateBeatsRate() {
+        // Playback rate (per real second) = song speed x tempo ratio.
+        val rate = (effectiveBpm() * speed / BASE_BEATS_BPM).toFloat()
+        val current = beatsPlayer.playbackParameters.speed
+        if (abs(current - rate) > 0.0005f) {
+            beatsPlayer.playbackParameters = PlaybackParameters(rate, 1.0f)
+        }
+    }
+
+    private var beatsTicker: Runnable? = null
+
+    private fun startBeatsTicker() {
+        stopBeatsTicker()
+        val r = object : Runnable {
+            override fun run() {
+                if (!beatsOn) return
+                alignBeats()
+                handler.postDelayed(this, BEATS_TICK_MS)
+            }
+        }
+        beatsTicker = r
+        handler.post(r)
+    }
+
+    private fun stopBeatsTicker() {
+        beatsTicker?.let { handler.removeCallbacks(it) }
+        beatsTicker = null
+    }
+
+    /**
+     * Phase-lock the loop to the song's beat grid: where the loop should
+     * be is re-derived from the song's content position, and the loop is
+     * nudged with a seek when it strays, so sync holds for the whole song
+     * (and recovers by itself after the song is scrubbed).
+     *
+     * Both positions are CONTENT positions: the song's beats sit at
+     * offset + k x (60000 / bpm) in its own timeline, and one loop spans
+     * 8 beats, so content maps to content by the plain tempo ratio.
+     */
+    private fun alignBeats() {
+        if (songUri == null) return
+        updateBeatsRate()
+        val effBpm = effectiveBpm()
+        val loopSongMs = LOOP_BEATS * 60000.0 / effBpm
+        val offset = beatInfo?.offsetMs ?: 0.0
+        val songPos = songPlayer.currentPosition.toDouble()
+        var phase = (songPos - offset) % loopSongMs
+        if (phase < 0) phase += loopSongMs
+        val expected = (phase * (effBpm / BASE_BEATS_BPM)).toLong()
+            .coerceIn(0L, (BEATS_LOOP_MS - 1).toLong())
+        val current = beatsPlayer.currentPosition.toDouble()
+        var diff = expected - current
+        if (diff > BEATS_LOOP_MS / 2) diff -= BEATS_LOOP_MS
+        if (diff < -BEATS_LOOP_MS / 2) diff += BEATS_LOOP_MS
+        if (abs(diff) > BEATS_ALIGN_TOLERANCE_MS) {
+            beatsPlayer.seekTo(expected)
+        }
+    }
+
     /** Master play: the song plus whichever layers are switched on. */
     fun playAll() {
         songPlayer.play()
         if (rainChoice != RainChoice.NONE) rainPlayer.play()
         if (vinylOn) vinylPlayer.play()
         if (cassetteOn) cassettePlayer.play()
+        if (beatsOn) {
+            ensureBeatsReady()
+            beatsPlayer.play()
+            startBeatsTicker()
+        }
         onStateChanged?.invoke()
     }
 
@@ -239,6 +429,8 @@ class PlayerController(context: Context) {
         rainPlayer.pause()
         vinylPlayer.pause()
         cassettePlayer.pause()
+        beatsPlayer.pause()
+        stopBeatsTicker()
         onStateChanged?.invoke()
     }
 
@@ -260,7 +452,8 @@ class PlayerController(context: Context) {
             if (naram) "Naram" else null,
             if (geela) "Geela" else null,
             if (vinylOn) "Vinyl" else null,
-            if (cassetteOn) "Cassette" else null
+            if (cassetteOn) "Cassette" else null,
+            if (beatsOn) "Beats " + beatsStyleLabel(beatsStyle) else null
         )
         return buildString {
             append("%.2f".format(speed)).append("x · ")
@@ -278,13 +471,17 @@ class PlayerController(context: Context) {
     }
 
     fun release() {
+        detectGeneration++
         applySleepTimer(0)
         stopWobble()
+        stopBeatsTicker()
         fx.release()
+        beatsFx.release()
         songPlayer.release()
         rainPlayer.release()
         vinylPlayer.release()
         cassettePlayer.release()
+        beatsPlayer.release()
     }
 
     companion object {
@@ -298,5 +495,13 @@ class PlayerController(context: Context) {
         private const val RAIN_TIN_ASSET = "asset:///rain_tin.mp3"
         private const val VINYL_ASSET = "asset:///vinyl_crackle.mp3"
         private const val CASSETTE_ASSET = "asset:///tape_hiss.mp3"
+        private const val BEATS_STANDARD_ASSET = "asset:///beats_a.ogg"
+        private const val BEATS_DYNAMIC_ASSET = "asset:///beats_b.ogg"
+        private const val BASE_BEATS_BPM = 80.0
+        private const val FALLBACK_BPM = 90.0
+        private const val LOOP_BEATS = 8
+        private const val BEATS_LOOP_MS = 6000.0
+        private const val BEATS_TICK_MS = 250L
+        private const val BEATS_ALIGN_TOLERANCE_MS = 50.0
     }
 }
