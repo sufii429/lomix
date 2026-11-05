@@ -26,6 +26,20 @@ rain underneath. One screen, three big pill tabs.
 Exporting the mix to an mp3 file is deliberately **not** in v1 — that is a
 phase-2 (ffmpeg) step if it is ever wanted.
 
+## v1.1 additions
+
+- **Background playback** — the players live in a foreground
+  `PlaybackService` with a notification (song name, mix summary,
+  Play/Pause + Stop), so the mix survives the screen turning off or the
+  app being swiped away; the mix state lives in the controller, so a
+  reopened app finds everything as it was left.
+- **Sleep timer** — Band / 15 / 30 / 60 min chips under the seek bar;
+  when it fires, everything pauses.
+- **Tin Wali Chhat** — a third rain layer: the same field recording plus
+  a dense metallic patter (tin-roof rain), `rain_tin.mp3`.
+- **Cassette** — a fifth lofi effect: soft tape hiss (`tape_hiss.mp3`)
+  plus a gentle pitch wobble (±0.4%, 5 s period) on the song.
+
 ## Build & install
 
 There is no Gradle wrapper by design: pushes to `main`/`master` run

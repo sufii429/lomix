@@ -1,9 +1,15 @@
 package app.lomix.android
 
+import android.Manifest
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.ServiceConnection
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.IBinder
 import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -32,13 +38,16 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Opacity
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Radio
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Thunderstorm
+import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
@@ -77,6 +86,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.media3.common.Player
 import kotlinx.coroutines.delay
 
@@ -93,16 +103,59 @@ private val SkyGradient = Brush.verticalGradient(
 
 class MainActivity : ComponentActivity() {
 
-    private lateinit var controller: PlayerController
+    // The controller lives in PlaybackService (v1.1); the Activity only
+    // borrows it while bound, so leaving the app never stops the music.
+    private var boundController by mutableStateOf<PlayerController?>(null)
+    private var isBound = false
+
+    private val connection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+            boundController = (service as? PlaybackService.LocalBinder)?.service()?.controller
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            boundController = null
+        }
+    }
+
+    private val notificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        controller = PlayerController(this)
-        setContent { LomixScreen(controller) }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+
+        val serviceIntent = Intent(this, PlaybackService::class.java)
+        ContextCompat.startForegroundService(this, serviceIntent)
+        isBound = bindService(serviceIntent, connection, Context.BIND_AUTO_CREATE)
+
+        setContent {
+            val current = boundController
+            if (current != null) {
+                LomixScreen(current)
+            } else {
+                MaterialTheme {
+                    Box(
+                        modifier = Modifier.fillMaxSize().background(SkyGradient),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("Lomix", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Ink)
+                    }
+                }
+            }
+        }
     }
 
     override fun onDestroy() {
-        controller.release()
+        if (isBound) {
+            unbindService(connection)
+            isBound = false
+        }
         super.onDestroy()
     }
 }
@@ -111,22 +164,33 @@ class MainActivity : ComponentActivity() {
 private fun LomixScreen(controller: PlayerController) {
     val context = LocalContext.current
 
-    // ---- UI state -------------------------------------------------------
-    var songUri by remember { mutableStateOf<Uri?>(null) }
-    var songName by remember { mutableStateOf("No song picked") }
-    var isPlaying by remember { mutableStateOf(false) }
+    // ---- UI state (starting values come from the controller, which keeps
+    // the mix while the Activity is gone) ----------------------------------
+    var songUri by remember { mutableStateOf(controller.songUri) }
+    var songName by remember {
+        mutableStateOf(if (controller.songName.isEmpty()) "No song picked" else controller.songName)
+    }
+    var isPlaying by remember { mutableStateOf(controller.isPlaying) }
     var positionMs by remember { mutableLongStateOf(0L) }
     var durationMs by remember { mutableLongStateOf(0L) }
     var scrubFraction by remember { mutableStateOf<Float?>(null) }
 
-    var speed by remember { mutableFloatStateOf(0.95f) }
-    var garam by remember { mutableStateOf(true) }
-    var naram by remember { mutableStateOf(false) }
-    var geela by remember { mutableStateOf(false) }
-    var vinyl by remember { mutableStateOf(false) }
+    var speed by remember { mutableFloatStateOf(controller.speed) }
+    var garam by remember { mutableStateOf(controller.garam) }
+    var naram by remember { mutableStateOf(controller.naram) }
+    var geela by remember { mutableStateOf(controller.geela) }
+    var vinyl by remember { mutableStateOf(controller.vinylOn) }
+    var cassette by remember { mutableStateOf(controller.cassetteOn) }
 
-    var rainChoice by remember { mutableStateOf(RainChoice.GENTLE) }
-    var rainVolume by remember { mutableIntStateOf(40) }
+    var rainChoice by remember { mutableStateOf(controller.rainChoice) }
+    var rainVolume by remember { mutableIntStateOf(controller.rainVolumePercent) }
+
+    var sleepMinutes by remember { mutableIntStateOf(controller.sleepMinutes) }
+    var sleepRemainingMs by remember { mutableLongStateOf(controller.sleepRemainingMs) }
+    // Last sleep value this UI pushed into the controller; the poll below
+    // only adopts the controller's value when it differs from this (i.e.
+    // the timer fired on its own), never overwriting a fresh user tap.
+    var lastSleepPushed by remember { mutableIntStateOf(controller.sleepMinutes) }
 
     var selectedTab by remember { mutableIntStateOf(0) }
 
@@ -145,25 +209,28 @@ private fun LomixScreen(controller: PlayerController) {
                 // Some providers don't offer persistable grants; the URI
                 // still works for this session, which is enough for v1.
             }
-            songName = queryDisplayName(context, uri) ?: "Picked song"
+            val name = queryDisplayName(context, uri) ?: "Picked song"
+            songName = name
             songUri = uri
             isPlaying = false
             positionMs = 0L
-            controller.setSong(uri)
+            controller.setSong(uri, name)
         }
     }
 
-    // ---- Declarative wiring: state -> players ---------------------------
-    LaunchedEffect(speed) { controller.setSpeed(speed) }
+    // ---- Declarative wiring: state -> controller ------------------------
+    LaunchedEffect(speed) { controller.applySpeed(speed) }
     LaunchedEffect(garam, naram, geela) { controller.applyFx(garam, naram, geela) }
-    LaunchedEffect(rainChoice, rainVolume) {
-        controller.setRain(rainChoice, rainVolume, isPlaying)
+    LaunchedEffect(rainChoice, rainVolume) { controller.applyRain(rainChoice, rainVolume) }
+    LaunchedEffect(vinyl) { controller.applyVinyl(vinyl) }
+    LaunchedEffect(cassette) { controller.applyCassette(cassette) }
+    LaunchedEffect(sleepMinutes) {
+        lastSleepPushed = sleepMinutes
+        controller.applySleepTimer(sleepMinutes)
     }
-    LaunchedEffect(vinyl) { controller.setVinyl(vinyl, isPlaying) }
     LaunchedEffect(isPlaying) {
         if (hasSong) {
-            if (isPlaying) controller.playAll(rainChoice != RainChoice.NONE, vinyl)
-            else controller.pauseAll()
+            if (isPlaying) controller.playAll() else controller.pauseAll()
         }
     }
 
@@ -175,9 +242,16 @@ private fun LomixScreen(controller: PlayerController) {
             positionMs = p.currentPosition.coerceAtLeast(0L)
             if (p.playbackState == Player.STATE_ENDED) {
                 controller.onSongEnded()
-                isPlaying = false
                 positionMs = 0L
             }
+            // Keep the UI in step with changes made from the notification
+            // (Play/Pause there, or the sleep timer firing).
+            isPlaying = controller.isPlaying
+            if (controller.sleepMinutes != lastSleepPushed) {
+                sleepMinutes = controller.sleepMinutes
+                lastSleepPushed = controller.sleepMinutes
+            }
+            sleepRemainingMs = controller.sleepRemainingMs
             delay(500)
         }
     }
@@ -187,7 +261,8 @@ private fun LomixScreen(controller: PlayerController) {
         if (garam) "Garam" else null,
         if (naram) "Naram" else null,
         if (geela) "Geela" else null,
-        if (vinyl) "Vinyl" else null
+        if (vinyl) "Vinyl" else null,
+        if (cassette) "Cassette" else null
     )
     val mixText = buildString {
         append("%.2f".format(speed)).append("x · ")
@@ -198,6 +273,7 @@ private fun LomixScreen(controller: PlayerController) {
                 RainChoice.NONE -> "No rain"
                 RainChoice.GENTLE -> "Halki Raat Wali"
                 RainChoice.HEAVY -> "Tez Barsaat"
+                RainChoice.TIN -> "Tin Wali Chhat"
             }
         )
     }
@@ -320,6 +396,40 @@ private fun LomixScreen(controller: PlayerController) {
                         Spacer(Modifier.weight(1f))
                         Text(formatTime(durationMs), fontSize = 12.sp, color = MutedInk)
                     }
+
+                    // Sleep timer (v1.1)
+                    Spacer(Modifier.height(10.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Filled.Timer, contentDescription = null, tint = MutedInk, modifier = Modifier.size(17.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Neend timer", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Ink)
+                        Spacer(Modifier.weight(1f))
+                        if (sleepMinutes > 0) {
+                            val minsLeft = ((sleepRemainingMs + 59_999L) / 60_000L).toInt()
+                            Text("~$minsLeft min baqi", fontSize = 12.sp, color = MutedInk)
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf(0 to "Band", 15 to "15 min", 30 to "30 min", 60 to "60 min").forEach { (mins, label) ->
+                            val active = sleepMinutes == mins
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(50))
+                                    .background(if (active) AccentBlue else IdleTint)
+                                    .border(1.dp, if (active) AccentBlue else CardBorder, RoundedCornerShape(50))
+                                    .clickable { sleepMinutes = mins }
+                                    .padding(horizontal = 12.dp, vertical = 7.dp)
+                            ) {
+                                Text(
+                                    label,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (active) Color.White else Ink
+                                )
+                            }
+                        }
+                    }
                 }
                 Spacer(Modifier.height(10.dp))
             }
@@ -347,12 +457,14 @@ private fun LomixScreen(controller: PlayerController) {
                         0 -> SpeedPanel(speed) { speed = it }
                         1 -> LofiPanel(
                             garam = garam, naram = naram, geela = geela, vinyl = vinyl,
+                            cassette = cassette,
                             onToggle = { which ->
                                 when (which) {
                                     "garam" -> garam = !garam
                                     "naram" -> naram = !naram
                                     "geela" -> geela = !geela
                                     "vinyl" -> vinyl = !vinyl
+                                    "cassette" -> cassette = !cassette
                                 }
                             }
                         )
@@ -476,6 +588,7 @@ private fun LofiPanel(
     naram: Boolean,
     geela: Boolean,
     vinyl: Boolean,
+    cassette: Boolean,
     onToggle: (String) -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -483,6 +596,7 @@ private fun LofiPanel(
         FxToggleCard("Naram", "Soft — halki naram awaz, kaan par asan", Icons.Filled.Tune, naram) { onToggle("naram") }
         FxToggleCard("Geela", "Wet — medium room ki halki goonj", Icons.Filled.Opacity, geela) { onToggle("geela") }
         FxToggleCard("Vinyl", "Purani record ki khar-kharahat, ganay ke neeche", Icons.Filled.Album, vinyl) { onToggle("vinyl") }
+        FxToggleCard("Cassette", "Purani tape ki halki hiss, saath sur ki naram laraz", Icons.Filled.Radio, cassette) { onToggle("cassette") }
         Text(
             "Rang aik saath bhi lag sakte hain — jo on hai, mix mein shamil hai.",
             fontSize = 12.sp,
@@ -536,6 +650,7 @@ private fun RainPanel(
     Column {
         RainOption(RainChoice.NONE, "Koi Nahi", "Baarish band", Icons.Filled.VolumeOff, choice) { onChoice(RainChoice.NONE) }
         RainOption(RainChoice.GENTLE, "Halki Raat Wali", "Halki, sust raat wali baarish", Icons.Filled.WaterDrop, choice) { onChoice(RainChoice.GENTLE) }
+        RainOption(RainChoice.TIN, "Tin Wali Chhat", "Tin ki chhat par boondon ki tez awaaz", Icons.Filled.Home, choice) { onChoice(RainChoice.TIN) }
         RainOption(RainChoice.HEAVY, "Tez Barsaat", "Tez baarish, zyada shor wali", Icons.Filled.Thunderstorm, choice) { onChoice(RainChoice.HEAVY) }
         Spacer(Modifier.height(12.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
