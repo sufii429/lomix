@@ -189,6 +189,8 @@ private fun LomixScreen(controller: PlayerController) {
     var bpmAdjust by remember { mutableDoubleStateOf(controller.bpmAdjust) }
     var beatsBpm by remember { mutableStateOf(controller.beatInfo?.bpm) }
     var beatsDetecting by remember { mutableStateOf(controller.beatsDetecting) }
+    var beatsSource by remember { mutableStateOf(controller.beatsSource) }
+    var selfBeatsState by remember { mutableStateOf(controller.selfBeatsState) }
     // Same guard as the sleep timer: the poll adopts the controller's
     // adjust only when it changed on its own (a new song resets it to 0).
     var lastBeatsAdjustPushed by remember { mutableDoubleStateOf(controller.bpmAdjust) }
@@ -235,9 +237,9 @@ private fun LomixScreen(controller: PlayerController) {
     LaunchedEffect(rainChoice, rainVolume) { controller.applyRain(rainChoice, rainVolume) }
     LaunchedEffect(vinyl) { controller.applyVinyl(vinyl) }
     LaunchedEffect(cassette) { controller.applyCassette(cassette) }
-    LaunchedEffect(beatsOn, beatsStyle, beatsVolume, bpmAdjust) {
+    LaunchedEffect(beatsOn, beatsStyle, beatsVolume, bpmAdjust, beatsSource) {
         lastBeatsAdjustPushed = bpmAdjust
-        controller.applyBeats(beatsOn, beatsStyle, beatsVolume, bpmAdjust)
+        controller.applyBeats(beatsOn, beatsStyle, beatsVolume, bpmAdjust, beatsSource)
     }
     LaunchedEffect(sleepMinutes) {
         lastSleepPushed = sleepMinutes
@@ -269,6 +271,7 @@ private fun LomixScreen(controller: PlayerController) {
             sleepRemainingMs = controller.sleepRemainingMs
             beatsBpm = controller.beatInfo?.bpm
             beatsDetecting = controller.beatsDetecting
+            selfBeatsState = controller.selfBeatsState
             if (controller.bpmAdjust != lastBeatsAdjustPushed) {
                 bpmAdjust = controller.bpmAdjust
                 lastBeatsAdjustPushed = controller.bpmAdjust
@@ -499,10 +502,13 @@ private fun LomixScreen(controller: PlayerController) {
                             detecting = beatsDetecting,
                             adjust = bpmAdjust,
                             hasSong = hasSong,
+                            source = beatsSource,
+                            selfState = selfBeatsState,
                             onToggle = { beatsOn = !beatsOn },
                             onStyle = { beatsStyle = it },
                             onVolume = { beatsVolume = it },
-                            onAdjust = { bpmAdjust = it }
+                            onAdjust = { bpmAdjust = it },
+                            onSource = { beatsSource = it }
                         )
                         else -> RainPanel(
                             choice = rainChoice,
@@ -745,10 +751,13 @@ private fun BeatsPanel(
     detecting: Boolean,
     adjust: Double,
     hasSong: Boolean,
+    source: BeatsSource,
+    selfState: SelfBeatsState,
     onToggle: () -> Unit,
     onStyle: (BeatsStyle) -> Unit,
     onVolume: (Int) -> Unit,
-    onAdjust: (Double) -> Unit
+    onAdjust: (Double) -> Unit,
+    onSource: (BeatsSource) -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         FxToggleCard(
@@ -763,6 +772,21 @@ private fun BeatsPanel(
             else -> "Taal khud nahi mili — neeche se BPM haath se theek karein"
         }
         Text(status, fontSize = 12.sp, color = MutedInk)
+
+        Text("Beats ka source", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Ink)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            BeatsChip("App wali", source == BeatsSource.BUILTIN) { onSource(BeatsSource.BUILTIN) }
+            BeatsChip("Ganay ki apni", source == BeatsSource.SELF) { onSource(BeatsSource.SELF) }
+        }
+        if (source == BeatsSource.SELF) {
+            val selfStatus = when (selfState) {
+                SelfBeatsState.BUILDING -> "Is ganay ke drum se beats bana raha hai…"
+                SelfBeatsState.READY -> "Ye beats isi ganay ke apne drum se bani hain"
+                SelfBeatsState.MISSING -> "Is ganay mein saaf drum nahi mile — App wali beats chalengi"
+                SelfBeatsState.IDLE -> "Gana chunein — phir usi ke drum se beats banengi"
+            }
+            Text(selfStatus, fontSize = 12.sp, color = MutedInk)
+        }
 
         Text("Style", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Ink)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

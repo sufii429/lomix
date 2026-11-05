@@ -43,7 +43,7 @@ data class BeatInfo(val bpm: Double, val offsetMs: Double)
  */
 object BeatDetector {
 
-    private const val SR = 22050
+    const val SR = 22050
     private const val WIN = 2048
     private const val HOP = 512
     private const val FPS = SR.toDouble() / HOP
@@ -53,11 +53,21 @@ object BeatDetector {
     private const val PRIOR_BPM = 96.0
 
     fun detect(context: Context, uri: Uri): BeatInfo? {
-        val pcm = try {
+        val pcm = decodePcm(context, uri) ?: return null
+        return detectFromPcm(pcm)
+    }
+
+    /** Stage 1 only, for callers that also want the decoded PCM. */
+    fun decodePcm(context: Context, uri: Uri): FloatArray? {
+        return try {
             decodeMonoResampled(context, uri)
         } catch (e: Exception) {
             null
-        } ?: return null
+        }
+    }
+
+    /** Stages 2-4 on PCM already decoded by [decodePcm]. */
+    fun detectFromPcm(pcm: FloatArray): BeatInfo? {
         if (pcm.size < SR * 20) return null
         val flux = fluxEnvelope(pcm)
         if (flux.size < 200) return null

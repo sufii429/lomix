@@ -141,3 +141,17 @@ copied from any song) under a very simple regular pattern: kick on
 beat 1, brush on 2 & 4, one soft kick on the "&" of 3, sparse faint
 ticks, straight timing. Loops: beats_a 97,941 / beats_b 97,907 /
 beats_c 97,095 bytes.
+
+## v1.3.0 — workaround B: the song's own beats
+
+A second beats source, "Ganay ki apni" (the song's own): `SelfBeats`
+uses the detected grid to find the song's cleanest kick-like and
+snare-like hits in the decoded PCM (strength + isolation + spectral
+gates, prototyped offline on the Mann Ki Lagan original and remix),
+cuts them out, and renders the universal pattern as a native-tempo
+2-bar WAV loop with a small Schroeder reverb, played phase-locked
+like the bundled loops. If the gates fail (no clean drums in the
+song), the state shows MISSING and the bundled loops keep playing.
+The decoded PCM is kept per song so switching source or style
+rebuilds without a second decode. Next on Mazeen's list: in-app drum
+pads (noted 2026-11-05).

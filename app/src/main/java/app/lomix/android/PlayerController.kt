@@ -18,6 +18,12 @@ enum class RainChoice { NONE, GENTLE, HEAVY, TIN }
 /** Beats styles of the "Beats" tab; the EQ curves live in [BeatsFx]. */
 enum class BeatsStyle { BALANCED, WARM, BASS_BOOST, SMOOTH, DYNAMIC }
 
+/** Where the beats come from: the bundled loops, or the song itself (v1.3). */
+enum class BeatsSource { BUILTIN, SELF }
+
+/** Build state of the current song's own beats (see [SelfBeats]). */
+enum class SelfBeatsState { IDLE, BUILDING, READY, MISSING }
+
 /** Display label for a beats style (UI chips + notification summary). */
 fun beatsStyleLabel(style: BeatsStyle): String = when (style) {
     BeatsStyle.BALANCED -> "Balanced"
@@ -125,6 +131,22 @@ class PlayerController(context: Context) {
     /** Which loop pattern asset is currently loaded into beatsPlayer. */
     private var beatsLoadedAsset: String? = null
 
+    // ---- Self-beats state (v1.3, workaround B) ------------------------------
+    var beatsSource: BeatsSource = BeatsSource.BUILTIN
+        private set
+    var selfBeatsState: SelfBeatsState = SelfBeatsState.IDLE
+        private set
+
+    /** Decoded PCM of the current song, kept so self-beats can be built
+     *  (or rebuilt for another style) without decoding twice. */
+    private var songPcm: FloatArray? = null
+
+    /** The rendered self-beats loop for the current song, if built. */
+    private var selfLoopFile: java.io.File? = null
+
+    /** Tempo the self loop was rendered at (it is a native-tempo loop). */
+    private var selfLoopBpm: Double = 0.0
+
     /** Incremented per song so stale detection results are dropped. */
     private var detectGeneration: Int = 0
 
@@ -225,20 +247,87 @@ class PlayerController(context: Context) {
         beatInfo = null
         bpmAdjust = 0.0
         beatsDetecting = true
+        songPcm = null
+        selfLoopFile = null
+        selfBeatsState =
+            if (beatsSource == BeatsSource.SELF) SelfBeatsState.BUILDING else SelfBeatsState.IDLE
         stopBeatsTicker()
         beatsPlayer.pause()
         Thread {
-            val info = BeatDetector.detect(appContext, uri)
+            val pcm = BeatDetector.decodePcm(appContext, uri)
+            val info = pcm?.let { BeatDetector.detectFromPcm(it) }
             handler.post {
                 if (generation == detectGeneration && songUri == uri) {
                     beatsDetecting = false
                     beatInfo = info
+                    songPcm = pcm
                     if (beatsOn) {
                         ensureBeatsReady()
                         if (isPlaying) {
                             beatsPlayer.play()
                             startBeatsTicker()
                         }
+                    }
+                    if (beatsSource == BeatsSource.SELF) maybeBuildSelfLoop()
+                    onStateChanged?.invoke()
+                }
+            }
+        }.start()
+    }
+
+    private fun fullnessFor(style: BeatsStyle): Int = when (style) {
+        BeatsStyle.SMOOTH -> 0
+        BeatsStyle.DYNAMIC -> 2
+        else -> 1
+    }
+
+    /** True while the loaded beats are the current song's own loop. */
+    private fun selfActive(): Boolean =
+        beatsSource == BeatsSource.SELF && selfLoopFile != null
+
+    /** The tempo the loaded loop was rendered at: 80 for the bundled
+     *  loops, the song's own detected tempo for a self loop. */
+    private fun beatsBaseBpm(): Double = if (selfActive()) selfLoopBpm else BASE_BEATS_BPM
+
+    /**
+     * (Re)build the current song's own beats from its stored PCM, on a
+     * background thread. On failure the state becomes MISSING and the
+     * bundled loops keep playing — a bad extraction never reaches the
+     * ears.
+     */
+    private fun maybeBuildSelfLoop() {
+        val pcm = songPcm
+        val info = beatInfo
+        val uri = songUri
+        if (pcm == null || info == null || uri == null) {
+            selfLoopFile = null
+            selfBeatsState = SelfBeatsState.MISSING
+            return
+        }
+        val generation = detectGeneration
+        val style = beatsStyle
+        selfBeatsState = SelfBeatsState.BUILDING
+        onStateChanged?.invoke()
+        Thread {
+            val file = java.io.File(
+                appContext.cacheDir, "selfbeats_${generation}_${style.name}.wav"
+            )
+            val ok = SelfBeats.buildLoop(pcm, info, fullnessFor(style), file)
+            handler.post {
+                if (generation == detectGeneration && songUri == uri &&
+                    beatsSource == BeatsSource.SELF
+                ) {
+                    if (ok) {
+                        selfLoopFile = file
+                        selfLoopBpm = info.bpm
+                        selfBeatsState = SelfBeatsState.READY
+                    } else {
+                        selfLoopFile = null
+                        selfBeatsState = SelfBeatsState.MISSING
+                    }
+                    if (beatsOn) {
+                        ensureBeatsReady()
+                        if (isPlaying) beatsPlayer.play()
                     }
                     onStateChanged?.invoke()
                 }
@@ -314,16 +403,32 @@ class PlayerController(context: Context) {
 
     // ---- Beats layer (v1.2) ------------------------------------------------
 
-    fun applyBeats(on: Boolean, style: BeatsStyle, volumePercent: Int, adjust: Double) {
+    fun applyBeats(
+        on: Boolean, style: BeatsStyle, volumePercent: Int, adjust: Double,
+        source: BeatsSource
+    ) {
+        val sourceChanged = source != beatsSource
+        val styleChanged = style != beatsStyle
         beatsOn = on
         beatsStyle = style
         beatsVolumePercent = volumePercent
         bpmAdjust = adjust
+        beatsSource = source
         if (!on) {
             stopBeatsTicker()
             beatsPlayer.pause()
             onStateChanged?.invoke()
             return
+        }
+        // Self loops are rendered per style fullness from the song's own
+        // drums: switching to that source, or changing style while it is
+        // active, (re)builds the loop from the stored PCM. Also build
+        // when the source was picked while beats were off (state IDLE).
+        if (source == BeatsSource.SELF &&
+            (sourceChanged || styleChanged ||
+                (selfLoopFile == null && selfBeatsState == SelfBeatsState.IDLE))
+        ) {
+            maybeBuildSelfLoop()
         }
         ensureBeatsReady()
         if (isPlaying) {
@@ -337,18 +442,29 @@ class PlayerController(context: Context) {
 
     /** Load the loop for the current style, set rate, volume and EQ. */
     private fun ensureBeatsReady() {
-        // Styles pick the pattern's fullness (v1.2.1): Smooth is the
-        // sparsest, Dynamic the fullest; the middle styles share the
-        // standard-soft pattern and differ only in EQ character.
-        val asset = when (beatsStyle) {
-            BeatsStyle.SMOOTH -> BEATS_SPARSE_ASSET
-            BeatsStyle.DYNAMIC -> BEATS_DYNAMIC_ASSET
-            else -> BEATS_STANDARD_ASSET
+        // Source first: with "Ganay ki apni" active and a built loop,
+        // that loop plays. Otherwise the bundled loops, where styles
+        // pick the pattern's fullness (v1.2.1): Smooth is the sparsest,
+        // Dynamic the fullest; the middle styles share the standard
+        // pattern and differ only in EQ character.
+        val key: String
+        val uri: String
+        if (selfActive()) {
+            key = "self:" + selfLoopFile!!.absolutePath
+            uri = selfLoopFile!!.toURI().toString()
+        } else {
+            val asset = when (beatsStyle) {
+                BeatsStyle.SMOOTH -> BEATS_SPARSE_ASSET
+                BeatsStyle.DYNAMIC -> BEATS_DYNAMIC_ASSET
+                else -> BEATS_STANDARD_ASSET
+            }
+            key = asset
+            uri = asset
         }
-        if (beatsLoadedAsset != asset) {
-            beatsPlayer.setMediaItem(MediaItem.fromUri(asset))
+        if (beatsLoadedAsset != key) {
+            beatsPlayer.setMediaItem(MediaItem.fromUri(uri))
             beatsPlayer.prepare()
-            beatsLoadedAsset = asset
+            beatsLoadedAsset = key
             beatsFx.attach(beatsPlayer.audioSessionId)
         }
         beatsFx.apply(beatsStyle)
@@ -358,7 +474,10 @@ class PlayerController(context: Context) {
 
     private fun updateBeatsRate() {
         // Playback rate (per real second) = song speed x tempo ratio.
-        val rate = (effectiveBpm() * speed / BASE_BEATS_BPM).toFloat()
+        // The ratio's base is the tempo the loaded loop was rendered
+        // at: 80 BPM for the bundled loops, the song's own tempo for a
+        // self loop (so a self loop runs at plain song speed).
+        val rate = (effectiveBpm() * speed / beatsBaseBpm()).toFloat()
         val current = beatsPlayer.playbackParameters.speed
         if (abs(current - rate) > 0.0005f) {
             beatsPlayer.playbackParameters = PlaybackParameters(rate, 1.0f)
@@ -410,12 +529,16 @@ class PlayerController(context: Context) {
         // same small lag behind the detected grid here.
         phase -= BEATS_LAG_MS
         if (phase < 0) phase += loopSongMs
-        val expected = (phase * (effBpm / BASE_BEATS_BPM)).toLong()
-            .coerceIn(0L, (BEATS_LOOP_MS - 1).toLong())
+        // The loaded loop spans 8 beats at its render tempo: 6000 ms
+        // for the bundled loops, the song's own 8 beats for a self loop.
+        val baseBpm = beatsBaseBpm()
+        val beatsLoopMs = LOOP_BEATS * 60000.0 / baseBpm
+        val expected = (phase * (effBpm / baseBpm)).toLong()
+            .coerceIn(0L, (beatsLoopMs - 1).toLong())
         val current = beatsPlayer.currentPosition.toDouble()
         var diff = expected - current
-        if (diff > BEATS_LOOP_MS / 2) diff -= BEATS_LOOP_MS
-        if (diff < -BEATS_LOOP_MS / 2) diff += BEATS_LOOP_MS
+        if (diff > beatsLoopMs / 2) diff -= beatsLoopMs
+        if (diff < -beatsLoopMs / 2) diff += beatsLoopMs
         if (abs(diff) > BEATS_ALIGN_TOLERANCE_MS) {
             beatsPlayer.seekTo(expected)
         }
