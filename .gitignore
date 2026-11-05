@@ -1,0 +1,13 @@
+*.iml
+.gradle/
+local.properties
+.idea/
+build/
+captures/
+.externalNativeBuild/
+.cxx/
+.asset-build/
+__pycache__/
+
+# Decoded at build time from assets-b64/ (see app/build.gradle.kts)
+app/src/main/assets/*.mp3

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Sky gradient behind the launcher icon (matches the app's screen gradient). -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <gradient
+        android:angle="270"
+        android:endColor="#FFF3D6"
+        android:startColor="#8ED0FF"
+        android:type="linear" />
+</shape>
