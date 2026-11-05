@@ -176,6 +176,17 @@ class PlayerController(context: Context) {
     val isPlaying: Boolean
         get() = if (stemMode) stemMaster()?.isPlaying ?: false else songPlayer.isPlaying
 
+    /**
+     * Playback intent: true whenever the active source is set to play,
+     * including while it is still buffering. The UI mirrors THIS, not
+     * isPlaying — after an auto-advance the next track buffers briefly
+     * with isPlaying still false, and mirroring isPlaying made the UI
+     * pause the very track the queue had just started (fixed v1.7).
+     */
+    val wantsToPlay: Boolean
+        get() = if (stemMode) stemMaster()?.playWhenReady ?: false
+        else songPlayer.playWhenReady
+
     /** Called whenever something the notification shows may have changed. */
     var onStateChanged: (() -> Unit)? = null
 

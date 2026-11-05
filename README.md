@@ -237,3 +237,14 @@ mockup first):
   colour (they were hardcoded white, which made their light text
   unreadable in the Raat theme), labels are single-line, and the five
   pills sit in 3 + 2 rows so nothing wraps mid-word.
+
+## v1.7.0
+- **Auto-advance fix**: the next queued track now starts playing by
+  itself. The UI was mirroring the player's isPlaying (false while the
+  new track buffers), which made it pause the track the queue had just
+  started; it now mirrors the play intent (playWhenReady) instead.
+- **Custom covers**: the song banner gains a small edit button — pick
+  any picture from the phone as this song's own cover (handy for mixes
+  whose file carries no art). Covers are stored in the app keyed by
+  the song uri, take priority over embedded art everywhere art shows,
+  and can be removed again from the same banner (the ✕ button).

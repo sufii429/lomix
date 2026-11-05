@@ -76,7 +76,7 @@ class PlaybackService : Service() {
 
     private fun buildNotification(): Notification {
         val hasSong = ::controller.isInitialized && controller.hasActiveSource
-        val playing = ::controller.isInitialized && controller.isPlaying
+        val playing = ::controller.isInitialized && controller.wantsToPlay
 
         val openIntent = PendingIntent.getActivity(
             this, 0,

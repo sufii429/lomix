@@ -6,7 +6,10 @@ import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.util.LruCache
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.graphics.Color
+import java.io.File
+import java.security.MessageDigest
 
 /**
  * Album art (v1.6): the picture embedded inside the song file itself,
@@ -21,6 +24,14 @@ object Artwork {
     fun load(context: Context, uri: Uri): Bitmap? {
         val key = uri.toString()
         cache.get(key)?.let { return it }
+        val custom = coverFile(context, uri)
+        if (custom.exists()) {
+            val bmp = BitmapFactory.decodeFile(custom.absolutePath)
+            if (bmp != null) {
+                cache.put(key, bmp)
+                return bmp
+            }
+        }
         val bitmap = try {
             val retriever = MediaMetadataRetriever()
             try {
@@ -36,6 +47,57 @@ object Artwork {
         }
         if (bitmap != null) cache.put(key, bitmap)
         return bitmap
+    }
+
+    /** Bumped whenever a custom cover changes, so the UI reloads art. */
+    val revision = mutableStateOf(0)
+
+    private fun coverFile(context: Context, uri: Uri): File {
+        val dir = File(context.filesDir, "covers").apply { mkdirs() }
+        val digest = MessageDigest.getInstance("SHA-1")
+            .digest(uri.toString().toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+        return File(dir, "$digest.jpg")
+    }
+
+    /** True when the user has set their own cover for this song. */
+    fun hasCustomCover(context: Context, uri: Uri): Boolean =
+        coverFile(context, uri).exists()
+
+    /**
+     * Save the user's own picture as this song's cover (v1.7) — for
+     * mixes whose file carries no art of its own. Stored inside the
+     * app, keyed by the song's uri; shown everywhere the embedded
+     * picture would be.
+     */
+    fun setCustomCover(context: Context, uri: Uri, imageUri: Uri): Boolean {
+        return try {
+            val raw = context.contentResolver.openInputStream(imageUri)?.use {
+                BitmapFactory.decodeStream(it)
+            } ?: return false
+            val longest = maxOf(raw.width, raw.height)
+            val bmp = if (longest > 1000) {
+                val s = 1000f / longest
+                Bitmap.createScaledBitmap(
+                    raw, (raw.width * s).toInt(), (raw.height * s).toInt(), true
+                )
+            } else raw
+            coverFile(context, uri).outputStream().use { out ->
+                bmp.compress(Bitmap.CompressFormat.JPEG, 88, out)
+            }
+            cache.evictAll()
+            revision.value++
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /** Remove the user's custom cover; the embedded art (if any) returns. */
+    fun removeCustomCover(context: Context, uri: Uri) {
+        coverFile(context, uri).delete()
+        cache.evictAll()
+        revision.value++
     }
 
     /** Fallback gradient pairs for songs with no embedded art. */

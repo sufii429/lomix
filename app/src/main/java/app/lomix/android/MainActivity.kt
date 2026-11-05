@@ -84,6 +84,7 @@ import androidx.compose.material.icons.filled.QueueMusic
 import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ExpandLess
@@ -370,6 +371,18 @@ private fun LomixScreen(controller: PlayerController) {
         }
     }
 
+    // ---- Custom cover picker (v1.7) ---------------------------------------
+    val coverPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { picked ->
+        val target = songUri
+        if (picked != null && target != null) {
+            Thread {
+                Artwork.setCustomCover(context.applicationContext, target, picked)
+            }.start()
+        }
+    }
+
     // ---- Tayyar gana (zip) picker ----------------------------------------
     val zipPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
@@ -439,7 +452,7 @@ private fun LomixScreen(controller: PlayerController) {
             }
             // Keep the UI in step with changes made from the notification
             // (Play/Pause there, or the sleep timer firing).
-            isPlaying = controller.isPlaying
+            isPlaying = controller.wantsToPlay
             activeStemId = controller.stemSet?.id
             // Now-playing mirrors: after an auto-advance the loaded
             // song/stems change under the UI — follow the controller.
@@ -648,6 +661,51 @@ private fun LomixScreen(controller: PlayerController) {
                                 )
                                 .padding(horizontal = 6.dp, vertical = 2.dp)
                         )
+                        if (!stemMode && songUri != null) {
+                            Row(
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .padding(8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(34.dp)
+                                        .clip(RoundedCornerShape(50))
+                                        .background(Color.Black.copy(alpha = 0.35f))
+                                        .clickable {
+                                            coverPicker.launch(arrayOf("image/*"))
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        Icons.Filled.Edit,
+                                        contentDescription = "Cover badlein",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(17.dp)
+                                    )
+                                }
+                                if (Artwork.hasCustomCover(context, songUri!!)) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(34.dp)
+                                            .clip(RoundedCornerShape(50))
+                                            .background(Color.Black.copy(alpha = 0.35f))
+                                            .clickable {
+                                                Artwork.removeCustomCover(context, songUri!!)
+                                            },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            Icons.Filled.Close,
+                                            contentDescription = "Cover hatayein",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(17.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 Row(
@@ -1638,10 +1696,11 @@ private fun queryDisplayName(context: Context, uri: Uri): String? {
  */
 @Composable
 private fun rememberArtwork(uri: Uri?): Bitmap? {
-    var bitmap by remember(uri) { mutableStateOf<Bitmap?>(null) }
+    val revision = Artwork.revision.value
+    var bitmap by remember(uri, revision) { mutableStateOf<Bitmap?>(null) }
     val context = LocalContext.current
     val handler = remember { Handler(Looper.getMainLooper()) }
-    LaunchedEffect(uri) {
+    LaunchedEffect(uri, revision) {
         bitmap = null
         if (uri != null) {
             Thread {
