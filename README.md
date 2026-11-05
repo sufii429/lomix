@@ -129,3 +129,15 @@ differ only in EQ. Default beats volume is 60%.
 
 Noted for v1.3 (Mazeen, 2026-11-05): 3–4 in-app drum pads so he can
 tap his own pattern and have it join the song via beatsync.
+
+## v1.2.2 — workaround A: the universal recipe
+
+The v1.2.1 sampled loops failed Mazeen's other-song test completely:
+drums and pattern both belonged to Mann Ki Lagan. Workaround A (of
+two he approved; B = per-song self-beats, later) is the opposite
+recipe — `make_beats.py`'s neutral synthesized kit (knock kick, dark
+brush, faint tick; voices tuned by the reference measurements but not
+copied from any song) under a very simple regular pattern: kick on
+beat 1, brush on 2 & 4, one soft kick on the "&" of 3, sparse faint
+ticks, straight timing. Loops: beats_a 97,941 / beats_b 97,907 /
+beats_c 97,095 bytes.

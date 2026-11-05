@@ -43,7 +43,7 @@ BEAT = 60.0 / BPM            # 0.75 s
 BAR = 4 * BEAT               # 3.0 s
 LOOP = 2 * BAR               # 6.0 s
 STEP = BEAT / 4              # 16th note
-SWING = 0.55                 # mild swing; his reference also sits laid-back
+SWING = 0.50                 # straight: his reference measured machine-tight
 rng = np.random.default_rng(11)
 
 ASSETS = Path(__file__).parent / "app" / "src" / "main" / "assets"
@@ -157,32 +157,34 @@ def swung(step_idx):
 
 
 def humanize(events, seed):
-    """Tiny per-hit velocity/timing variation, fixed per pattern."""
+    """Gentle velocity variation; timing stays (near-)grid — the
+    reference's hits measured within ~5 ms of one uniform offset."""
     r = np.random.default_rng(seed)
     out = []
     for step, sample, gain, pan in events:
-        out.append((step, sample, gain * float(r.uniform(0.88, 1.06)),
-                    pan, float(r.uniform(-0.0035, 0.0035))))
+        out.append((step, sample, gain * float(r.uniform(0.94, 1.03)),
+                    pan, float(r.uniform(-0.0015, 0.0015))))
     return out
 
 
 # ---------- patterns (32 steps = 2 bars) ----------
-# The standard pattern IS his reference, transcribed: brush on the
-# 2 & 4 backbeat (steps 4 and 12 of each bar); soft knock kicks
-# dancing around it — bar 1 steps 2,3,6,8,11,14 (note: NO kick on
-# beat 1, and a double-kick pickup on steps 2-3), bar 2 steps
-# 8,11,14; a faint dark tick on the 8ths instead of hats.
+# v1.2.2 "universal recipe" (Mazeen's workaround A): the v1.2.1 loops
+# copied ONE song's own drums and its intricate arrangement, and on
+# another song they fought that song's sur and groove ("bilkul bhi
+# acha nahi laga"). Beats that sit under ANY song use the opposite
+# recipe — a very simple, regular pattern and a neutral kit:
+# kick on beat 1, brush on the 2 & 4 backbeat, one soft kick on the
+# "&" of 3, tick kept faint and sparse (he heard marching ticks as a
+# "1,2,3,4 exercise" count). Same both bars, almost no variation.
 def pattern_standard():
     ev = []
-    kicks = {0: [(2, 0.90), (3, 0.80), (6, 0.95), (8, 0.90), (11, 0.85), (14, 0.95)],
-             1: [(8, 0.95), (11, 0.85), (14, 0.95)]}
     for bar in range(2):
         o = bar * 16
-        for s, g in kicks[bar]:
-            ev.append((o + s, KICK, g, 0.0))
+        ev += [(o + 0, KICK, 1.0, 0.0), (o + 10, KICK, 0.88, 0.0)]
         ev += [(o + 4, BRUSH, 1.0, -0.04), (o + 12, BRUSH, 1.0, -0.04)]
-        for h in range(0, 16, 2):
-            ev.append((o + h, TICK, 0.55, 0.15))
+        for h in (2, 6, 10, 14):
+            ev.append((o + h, TICK, 0.38, 0.15))
+    ev += [(16 + 7, KICK, 0.50, 0.0)]
     return humanize(ev, 22)
 
 
@@ -190,29 +192,23 @@ def pattern_sparse():
     ev = []
     for bar in range(2):
         o = bar * 16
-        ev.append((o + 8, KICK, 0.95, 0.0))
-        if bar == 0:
-            ev.append((o + 14, KICK, 0.90, 0.0))
+        ev.append((o + 0, KICK, 1.0, 0.0))
         ev += [(o + 4, BRUSH, 1.0, -0.04), (o + 12, BRUSH, 1.0, -0.04)]
-        for h in (2, 6, 10, 14):
-            ev.append((o + h, TICK, 0.45, 0.15))
+        for h in (6, 14):
+            ev.append((o + h, TICK, 0.30, 0.15))
     return humanize(ev, 21)
 
 
 def pattern_fuller():
     ev = []
-    kicks = {0: [(0, 0.80), (2, 0.90), (3, 0.80), (6, 0.95), (8, 0.90), (11, 0.85), (14, 0.95)],
-             1: [(0, 0.80), (8, 0.95), (11, 0.85), (14, 0.95)]}
     for bar in range(2):
         o = bar * 16
-        for s, g in kicks[bar]:
-            ev.append((o + s, KICK, g, 0.0))
-        ev += [(o + 4, BRUSH, 1.0, -0.04), (o + 12, BRUSH, 1.0, -0.04)]
-        for h in range(16):
-            ev.append((o + h, TICK, 0.5 if h % 2 == 0 else 0.32, 0.15))
-        for s in (0, 4, 8, 12):
-            ev.append((o + s, SHAKER, 0.35, -0.22))
-    ev += [(16 + 15, BRUSH_GHOST, 1.0, -0.04)]
+        ev += [(o + 0, KICK, 1.0, 0.0), (o + 7, KICK, 0.60, 0.0),
+               (o + 10, KICK, 0.90, 0.0)]
+        ev += [(o + 4, BRUSH, 1.0, -0.04), (o + 12, BRUSH, 1.0, -0.04),
+               (o + 15, BRUSH_GHOST, 1.0, -0.04)]
+        for h in range(0, 16, 2):
+            ev.append((o + h, TICK, 0.42 if h % 4 == 0 else 0.30, 0.15))
     return humanize(ev, 23)
 
 
@@ -240,7 +236,7 @@ def make_ir(seed):
 
 IR_L = make_ir(31)
 IR_R = make_ir(47)
-WET = 0.38
+WET = 0.32
 
 
 def dust_ring():
