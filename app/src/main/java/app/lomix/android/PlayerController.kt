@@ -15,6 +15,21 @@ import kotlin.math.sin
 /** Rain choices of the "Mahaul" tab (the Baarish section). */
 enum class RainChoice { NONE, GENTLE, HEAVY, TIN }
 
+/** What happens when a track ends (v1.6). */
+enum class RepeatMode { OFF, ALL, ONE }
+
+/** One playable item of the queue: a song, or a tayyar gana (stem set). */
+sealed class QueueItem {
+    data class Song(val uri: Uri, val title: String) : QueueItem()
+    data class Stems(val setId: String, val title: String) : QueueItem()
+
+    val displayTitle: String
+        get() = when (this) {
+            is Song -> title
+            is Stems -> title
+        }
+}
+
 /** Ambient layers of the "Mahaul" tab, below the rain. */
 enum class AmbientSound(val label: String, val asset: String) {
     FIRE("Aag", "asset:///amb_fire.mp3"),
@@ -164,6 +179,14 @@ class PlayerController(context: Context) {
     /** Called whenever something the notification shows may have changed. */
     var onStateChanged: (() -> Unit)? = null
 
+    // ---- Queue (v1.6) ---------------------------------------------------
+    var queue: List<QueueItem> = emptyList()
+        private set
+    var queueIndex: Int = -1
+        private set
+    var repeatMode: RepeatMode = RepeatMode.OFF
+    var shuffle: Boolean = false
+
     // ---- Sleep timer ------------------------------------------------------
     private val handler = Handler(Looper.getMainLooper())
     private var sleepRunnable: Runnable? = null
@@ -279,7 +302,11 @@ class PlayerController(context: Context) {
         cassettePlayer.prepare()
     }
 
-    fun setSong(uri: Uri, name: String) {
+    /** Play a single song now (its own one-item queue). */
+    fun setSong(uri: Uri, name: String) =
+        playItems(listOf(QueueItem.Song(uri, name)), 0)
+
+    private fun loadSong(uri: Uri, name: String) {
         clearStemSet()
         songUri = uri
         songName = name
@@ -300,7 +327,19 @@ class PlayerController(context: Context) {
      * effects, all sharing the current speed; a ticker then keeps every
      * stem aligned to the master so the parts never drift apart.
      */
+    /** Play a single tayyar gana now (its own one-item queue);
+     *  null just clears the stems, as before. */
     fun setStemSet(set: StemSet?) {
+        if (set == null) {
+            queue = emptyList()
+            queueIndex = -1
+            loadStemSet(null)
+            return
+        }
+        playItems(listOf(QueueItem.Stems(set.id, set.name)), 0)
+    }
+
+    private fun loadStemSet(set: StemSet?) {
         releaseStemPlayers()
         stemSet = set
         if (set == null) {
@@ -488,6 +527,112 @@ class PlayerController(context: Context) {
         onStateChanged?.invoke()
     }
 
+    // ---- Queue engine -------------------------------------------------
+
+    fun playItems(items: List<QueueItem>, startIndex: Int) {
+        if (items.isEmpty()) return
+        queue = items
+        queueIndex = startIndex.coerceIn(0, items.lastIndex)
+        loadCurrent()
+    }
+
+    private fun loadCurrent() {
+        when (val item = queue.getOrNull(queueIndex)) {
+            is QueueItem.Song -> loadSong(item.uri, item.title)
+            is QueueItem.Stems -> StemStore.loadSets(appContext)
+                .firstOrNull { it.id == item.setId }?.let { loadStemSet(it) }
+            null -> {}
+        }
+    }
+
+    fun playNext() = advance(manual = true)
+
+    fun playPrevious() {
+        if (queue.isEmpty()) return
+        if (activePositionMs() > 3000) {
+            seekActive(0)
+            return
+        }
+        if (queueIndex > 0) {
+            queueIndex -= 1
+            loadCurrent()
+            playAll()
+            } else {
+            seekActive(0)
+        }
+    }
+
+    private fun advance(manual: Boolean) {
+        if (queue.isEmpty()) return
+        if (!manual && repeatMode == RepeatMode.ONE) {
+            loadCurrent()
+            playAll()
+            return
+        }
+        val next = when {
+            shuffle && queue.size > 1 -> {
+                var n = queueIndex
+                while (n == queueIndex) n = queue.indices.random()
+                n
+            }
+            queueIndex + 1 < queue.size -> queueIndex + 1
+            repeatMode == RepeatMode.ALL || manual -> 0
+            else -> -1
+        }
+        if (next >= 0) {
+            queueIndex = next
+            loadCurrent()
+            playAll()
+            }
+    }
+
+    /** Add an item to the end of the queue without interrupting. */
+    fun enqueue(item: QueueItem) {
+        queue = queue + item
+        if (queueIndex == -1) {
+            queueIndex = 0
+            loadCurrent()
+        }
+    }
+
+    fun jumpToQueue(index: Int) {
+        if (index in queue.indices) {
+            queueIndex = index
+            loadCurrent()
+            playAll()
+            }
+    }
+
+    fun removeFromQueue(index: Int) {
+        if (index !in queue.indices) return
+        val wasCurrent = index == queueIndex
+        queue = queue.filterIndexed { i, _ -> i != index }
+        when {
+            queue.isEmpty() -> {
+                queueIndex = -1
+                clearSongPlayer()
+                loadStemSet(null)
+            }
+            wasCurrent -> {
+                queueIndex = minOf(index, queue.lastIndex)
+                loadCurrent()
+            }
+            index < queueIndex -> queueIndex -= 1
+        }
+    }
+
+    /** Stop and unload the song player (queue emptied out). */
+    private fun clearSongPlayer() {
+        songPlayer.pause()
+        songPlayer.clearMediaItems()
+        songUri = null
+        songName = ""
+    }
+
+    /** The controller's current per-stem volumes (the UI mirrors
+     *  these after an auto-advance loads a tayyar gana). */
+    fun stemVolumesSnapshot(): Map<StemKind, Int> = stemVolumes.toMap()
+
     /**
      * Snapshot the whole mix for the offline exporter (v1.5): the song
      * or the loaded stems with their gains, the speed and Lofi Rang
@@ -544,6 +689,7 @@ class PlayerController(context: Context) {
 
     /** Master play: the active source plus whichever layers are on. */
     fun playAll() {
+        if (activeEnded()) seekActive(0)
         if (stemMode) {
             stemPlayers.forEach { (_, p) -> p.play() }
             startStemTicker()
@@ -574,7 +720,17 @@ class PlayerController(context: Context) {
     }
 
     /** Active source finished: silence the layers and rewind for replay. */
+    /**
+     * Called by the UI poll when the active source reaches its end.
+     * With a queue (or a repeat mode) the next track starts by itself
+     * (v1.6); a lone track with repeat off keeps the old behaviour —
+     * pause and rewind, ready to play again.
+     */
     fun onActiveEnded() {
+        if (queue.size > 1 || repeatMode != RepeatMode.OFF) {
+            advance(manual = false)
+            if (!activeEnded()) return // a new track is loaded and playing
+        }
         pauseAll()
         seekActive(0)
     }

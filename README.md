@@ -206,3 +206,24 @@ calls, in one build:
    looping layers → AAC in an .m4a) and saves it to Music/Lomix via
    MediaStore. The Cassette pitch wobble is the one live effect not
    rendered (its hiss is); ±0.4% shimmer is inaudible in an export.
+
+## v1.6.0 — Queue, playlists, album art, themes
+
+The player grows up (Mazeen's direction, themes approved from a
+mockup first):
+
+1. **Queue + auto-play next**: tracks advance by themselves
+   (PlayerController's queue engine + the UI poll's onActiveEnded
+   hook, which now advances instead of only pausing). Prev/next
+   transport buttons, shuffle, and repeat off/all/one.
+2. **Library**: every picked song is remembered (LibraryStore);
+   a multi-picker adds many at once. **Playlists**: named, ordered
+   lists of library songs and tayyar ganay (PlaylistStore), with
+   add/remove/reorder and play-from-anywhere — all in the new fifth
+   tab, which also shows the live queue.
+3. **Album art**: the song file's embedded picture (Artwork, via
+   MediaMetadataRetriever) as a banner on the song card and as list
+   thumbs; songs without art get a deterministic gradient.
+4. **Themes**: Aasmaan (default), iPod Classic, Poweramp Raat —
+   one palette object read through composable getters, switched
+   from the chips under the header and persisted.

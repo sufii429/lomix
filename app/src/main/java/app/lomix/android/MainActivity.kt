@@ -67,6 +67,27 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import android.graphics.Bitmap
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.filled.Repeat
+import androidx.compose.material.icons.filled.RepeatOne
+import androidx.compose.material.icons.filled.QueueMusic
+import androidx.compose.material.icons.filled.PlaylistAdd
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
@@ -100,15 +121,72 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.delay
 
 // Approved palette (light, lively sky theme from the design mockup).
-private val Ink = Color(0xFF16233A)
-private val MutedInk = Color(0xFF5A6B84)
-private val AccentBlue = Color(0xFF2F8FE8)
-private val CardBorder = Color(0xFFD9E9F8)
-private val SelectedTint = Color(0xFFE1F0FE)
-private val IdleTint = Color(0xFFF3F9FF)
-private val SkyGradient = Brush.verticalGradient(
-    listOf(Color(0xFFBFE3FF), Color(0xFFDFF2FF), Color(0xFFFFF3D6))
+/**
+ * Themes (v1.6): three palettes approved from the mockup — Aasmaan
+ * (the original sky look, default), iPod Classic (silver/white) and
+ * Poweramp Raat (dark). Every colour the UI uses is read through the
+ * composable getters below from the active palette, so switching the
+ * theme recolours the whole app at once.
+ */
+private data class LomixPalette(
+    val ink: Color,
+    val muted: Color,
+    val accent: Color,
+    val border: Color,
+    val selectedTint: Color,
+    val idleTint: Color,
+    val card: Color,
+    val strip: Color,
+    val bg: List<Color>,
+    val scaffold: Color
 )
+
+private val AasmaanPalette = LomixPalette(
+    ink = Color(0xFF16233A), muted = Color(0xFF5A6B84), accent = Color(0xFF2F8FE8),
+    border = Color(0xFFD9E9F8), selectedTint = Color(0xFFE1F0FE), idleTint = Color(0xFFF3F9FF),
+    card = Color.White, strip = Color(0xFF16233A),
+    bg = listOf(Color(0xFFBFE3FF), Color(0xFFDFF2FF), Color(0xFFFFF3D6)),
+    scaffold = Color(0xFFEEF5FD)
+)
+
+private val IpodPalette = LomixPalette(
+    ink = Color(0xFF1C1C1E), muted = Color(0xFF8A8A93), accent = Color(0xFF2F6FD0),
+    border = Color(0xFFD8D8DE), selectedTint = Color(0xFFDCE9FA), idleTint = Color(0xFFEFEFF2),
+    card = Color.White, strip = Color(0xFF1C1C1E),
+    bg = listOf(Color(0xFFF4F4F6), Color(0xFFE9E9ED)),
+    scaffold = Color(0xFFF4F4F6)
+)
+
+private val RaatPalette = LomixPalette(
+    ink = Color(0xFFEDF0FA), muted = Color(0xFF8B93AD), accent = Color(0xFFFF7A45),
+    border = Color(0xFF262D4A), selectedTint = Color(0xFF2A3358), idleTint = Color(0xFF1B2138),
+    card = Color(0xFF151A2E), strip = Color(0xFF101527),
+    bg = listOf(Color(0xFF141A30), Color(0xFF05070F)),
+    scaffold = Color(0xFF0A0D18)
+)
+
+private val LocalPalette = staticCompositionLocalOf { AasmaanPalette }
+
+private val Ink: Color
+    @Composable get() = LocalPalette.current.ink
+private val MutedInk: Color
+    @Composable get() = LocalPalette.current.muted
+private val AccentBlue: Color
+    @Composable get() = LocalPalette.current.accent
+private val CardBorder: Color
+    @Composable get() = LocalPalette.current.border
+private val SelectedTint: Color
+    @Composable get() = LocalPalette.current.selectedTint
+private val IdleTint: Color
+    @Composable get() = LocalPalette.current.idleTint
+private val CardSurface: Color
+    @Composable get() = LocalPalette.current.card
+private val StripBg: Color
+    @Composable get() = LocalPalette.current.strip
+private val ScaffoldBg: Color
+    @Composable get() = LocalPalette.current.scaffold
+private val SkyGradient: Brush
+    @Composable get() = Brush.verticalGradient(LocalPalette.current.bg)
 
 class MainActivity : ComponentActivity() {
 
@@ -228,6 +306,34 @@ private fun LomixScreen(controller: PlayerController) {
     // the timer fired on its own), never overwriting a fresh user tap.
     var lastSleepPushed by remember { mutableIntStateOf(controller.sleepMinutes) }
 
+    // Themes (v1.6): Aasmaan default; the choice persists.
+    var themeKey by remember {
+        mutableStateOf(
+            appCtx.getSharedPreferences("lomix_ui", Context.MODE_PRIVATE)
+                .getString("theme", "AASMAAN") ?: "AASMAAN"
+        )
+    }
+    val palette = when (themeKey) {
+        "IPOD" -> IpodPalette
+        "RAAT" -> RaatPalette
+        else -> AasmaanPalette
+    }
+
+    fun setTheme(key: String) {
+        themeKey = key
+        appCtx.getSharedPreferences("lomix_ui", Context.MODE_PRIVATE)
+            .edit().putString("theme", key).apply()
+    }
+
+    // Queue mirrors + library + playlists (v1.6). The poll keeps the
+    // mirrors in step with the controller (auto-advance included).
+    var queueMirror by remember { mutableStateOf(controller.queue) }
+    var queueIndexMirror by remember { mutableIntStateOf(controller.queueIndex) }
+    var repeatMirror by remember { mutableStateOf(controller.repeatMode) }
+    var shuffleMirror by remember { mutableStateOf(controller.shuffle) }
+    var library by remember { mutableStateOf(LibraryStore.load(appCtx)) }
+    var playlists by remember { mutableStateOf(PlaylistStore.load(appCtx)) }
+
     // Export (v1.5).
     var exportRunning by remember { mutableStateOf(false) }
     var exportProgress by remember { mutableIntStateOf(0) }
@@ -260,6 +366,7 @@ private fun LomixScreen(controller: PlayerController) {
             isPlaying = false
             positionMs = 0L
             controller.setSong(uri, name)
+            library = LibraryStore.add(appCtx, LibrarySong(uri.toString(), name))
         }
     }
 
@@ -285,6 +392,23 @@ private fun LomixScreen(controller: PlayerController) {
                     }
                 }
             }.start()
+        }
+    }
+
+    // ---- Multi-picker: add many songs to the library at once (v1.6) -----
+    val multiPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        uris.forEach { uri ->
+            try {
+                context.contentResolver.takePersistableUriPermission(
+                    uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (e: Exception) {
+                // As with the single picker: session access still works.
+            }
+            val name = queryDisplayName(context, uri) ?: "Gana"
+            library = LibraryStore.add(appCtx, LibrarySong(uri.toString(), name))
         }
     }
 
@@ -317,6 +441,16 @@ private fun LomixScreen(controller: PlayerController) {
             // (Play/Pause there, or the sleep timer firing).
             isPlaying = controller.isPlaying
             activeStemId = controller.stemSet?.id
+            // Now-playing mirrors: after an auto-advance the loaded
+            // song/stems change under the UI — follow the controller.
+            songUri = controller.songUri
+            if (controller.songName.isNotEmpty()) songName = controller.songName
+            if (controller.stemMode && stemVolumes != controller.stemVolumes) {
+                stemVolumes.clear()
+                stemVolumes.putAll(controller.stemVolumes)
+            }
+            if (queueMirror != controller.queue) queueMirror = controller.queue
+            queueIndexMirror = controller.queueIndex
             if (controller.sleepMinutes != lastSleepPushed) {
                 sleepMinutes = controller.sleepMinutes
                 lastSleepPushed = controller.sleepMinutes
@@ -377,14 +511,25 @@ private fun LomixScreen(controller: PlayerController) {
         }
     }
 
+    CompositionLocalProvider(LocalPalette provides palette) {
     MaterialTheme(
-        colorScheme = lightColorScheme(
-            primary = AccentBlue,
-            onPrimary = Color.White,
-            surface = Color.White,
-            onSurface = Ink,
-            background = Color(0xFFEEF5FD)
-        )
+        colorScheme = if (themeKey == "RAAT") {
+            darkColorScheme(
+                primary = AccentBlue,
+                onPrimary = Color(0xFF1A0E04),
+                surface = CardSurface,
+                onSurface = Ink,
+                background = ScaffoldBg
+            )
+        } else {
+            lightColorScheme(
+                primary = AccentBlue,
+                onPrimary = Color.White,
+                surface = CardSurface,
+                onSurface = Ink,
+                background = ScaffoldBg
+            )
+        }
     ) {
         Column(
             modifier = Modifier
@@ -411,15 +556,100 @@ private fun LomixScreen(controller: PlayerController) {
                 }
             }
 
+            Spacer(Modifier.height(12.dp))
+
+            // Theme switcher (v1.6)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(
+                    Triple("AASMAAN", "Aasmaan", Color(0xFF7FC4F0)),
+                    Triple("IPOD", "iPod", Color(0xFFC9C9D1)),
+                    Triple("RAAT", "Raat", Color(0xFFFF7A45))
+                ).forEach { (key, label, dot) ->
+                    val active = themeKey == key
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(if (active) SelectedTint else IdleTint)
+                            .border(
+                                1.dp,
+                                if (active) AccentBlue else CardBorder,
+                                RoundedCornerShape(50)
+                            )
+                            .clickable { setTheme(key) }
+                            .padding(horizontal = 11.dp, vertical = 6.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(9.dp)
+                                    .clip(CircleShape)
+                                    .background(dot)
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                label,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Ink
+                            )
+                        }
+                    }
+                }
+            }
+
             Spacer(Modifier.height(18.dp))
 
             // Song card
             Card(
                 shape = RoundedCornerShape(24.dp),
-                colors = CardDefaults.cardColors(containerColor = Color.White),
+                colors = CardDefaults.cardColors(containerColor = CardSurface),
                 elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
+                // Album art banner (v1.6): the song's own embedded
+                // picture, or its deterministic fallback gradient.
+                if (hasSource) {
+                    val artBitmap = rememberArtwork(if (stemMode) null else songUri)
+                    val (gradA, gradB) = Artwork.fallbackFor(displayTitle)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(150.dp)
+                            .background(Brush.linearGradient(listOf(gradA, gradB)))
+                    ) {
+                        if (artBitmap != null) {
+                            Image(
+                                bitmap = artBitmap.asImageBitmap(),
+                                contentDescription = null,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            Icon(
+                                Icons.Filled.MusicNote,
+                                contentDescription = null,
+                                tint = Color.White.copy(alpha = 0.75f),
+                                modifier = Modifier
+                                    .size(54.dp)
+                                    .align(Alignment.Center)
+                            )
+                        }
+                        Text(
+                            if (stemMode) "TAYYAR GANA" else "ALBUM ART",
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White.copy(alpha = 0.92f),
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .padding(10.dp)
+                                .background(
+                                    Color.Black.copy(alpha = 0.28f),
+                                    RoundedCornerShape(6.dp)
+                                )
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                }
                 Row(
                     modifier = Modifier.padding(16.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -470,6 +700,75 @@ private fun LomixScreen(controller: PlayerController) {
                             tint = Color.White,
                             modifier = Modifier.size(40.dp)
                         )
+                    }
+                    // Transport: shuffle / previous / next / repeat (v1.6)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconButton(
+                            onClick = {
+                                shuffleMirror = !shuffleMirror
+                                controller.shuffle = shuffleMirror
+                            },
+                            enabled = hasSource
+                        ) {
+                            Icon(
+                                Icons.Filled.Shuffle,
+                                contentDescription = "Shuffle",
+                                tint = if (shuffleMirror) AccentBlue else MutedInk,
+                                modifier = Modifier.size(21.dp)
+                            )
+                        }
+                        IconButton(
+                            onClick = { controller.playPrevious(); isPlaying = true },
+                            enabled = hasSource
+                        ) {
+                            Icon(
+                                Icons.Filled.SkipPrevious,
+                                contentDescription = "Pichla gana",
+                                tint = Ink,
+                                modifier = Modifier.size(30.dp)
+                            )
+                        }
+                        IconButton(
+                            onClick = { controller.playNext(); isPlaying = true },
+                            enabled = hasSource
+                        ) {
+                            Icon(
+                                Icons.Filled.SkipNext,
+                                contentDescription = "Agla gana",
+                                tint = Ink,
+                                modifier = Modifier.size(30.dp)
+                            )
+                        }
+                        IconButton(
+                            onClick = {
+                                repeatMirror = when (repeatMirror) {
+                                    RepeatMode.OFF -> RepeatMode.ALL
+                                    RepeatMode.ALL -> RepeatMode.ONE
+                                    RepeatMode.ONE -> RepeatMode.OFF
+                                }
+                                controller.repeatMode = repeatMirror
+                            },
+                            enabled = hasSource
+                        ) {
+                            Icon(
+                                if (repeatMirror == RepeatMode.ONE) {
+                                    Icons.Filled.RepeatOne
+                                } else {
+                                    Icons.Filled.Repeat
+                                },
+                                contentDescription = "Repeat",
+                                tint = if (repeatMirror != RepeatMode.OFF) {
+                                    AccentBlue
+                                } else {
+                                    MutedInk
+                                },
+                                modifier = Modifier.size(21.dp)
+                            )
+                        }
                     }
                     Spacer(Modifier.height(6.dp))
                     val liveFraction = if (durationMs > 0) {
@@ -601,6 +900,7 @@ private fun LomixScreen(controller: PlayerController) {
                 PillTab("Lofi Rang", Icons.Filled.GraphicEq, selectedTab == 1, Modifier.weight(1f)) { selectedTab = 1 }
                 PillTab("Mahaul", Icons.Filled.WaterDrop, selectedTab == 2, Modifier.weight(1f)) { selectedTab = 2 }
                 PillTab("Hissay", Icons.Filled.LibraryMusic, selectedTab == 3, Modifier.weight(1f)) { selectedTab = 3 }
+                PillTab("Playlists", Icons.Filled.QueueMusic, selectedTab == 4, Modifier.weight(1f)) { selectedTab = 4 }
             }
 
             Spacer(Modifier.height(14.dp))
@@ -608,7 +908,7 @@ private fun LomixScreen(controller: PlayerController) {
             // Tab panel
             Card(
                 shape = RoundedCornerShape(24.dp),
-                colors = CardDefaults.cardColors(containerColor = Color.White),
+                colors = CardDefaults.cardColors(containerColor = CardSurface),
                 elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -645,7 +945,7 @@ private fun LomixScreen(controller: PlayerController) {
                                 controller.applyAmbient(sound, ambientOn[sound] ?: false, vol)
                             }
                         )
-                        else -> HissayPanel(
+                        3 -> HissayPanel(
                             sets = stemSets,
                             activeId = activeStemId,
                             volumes = stemVolumes,
@@ -685,6 +985,55 @@ private fun LomixScreen(controller: PlayerController) {
                                 controller.applyStemVolume(kind, vol)
                             }
                         )
+                        else -> PlaylistsPanel(
+                            queue = queueMirror,
+                            queueIndex = queueIndexMirror,
+                            library = library,
+                            stemSets = stemSets,
+                            playlists = playlists,
+                            onJumpQueue = { idx ->
+                                controller.jumpToQueue(idx)
+                                isPlaying = true
+                            },
+                            onRemoveQueue = { idx -> controller.removeFromQueue(idx) },
+                            onAddSongs = { multiPicker.launch(arrayOf("audio/*")) },
+                            onPlayLibrary = { idx ->
+                                controller.playItems(
+                                    library.map {
+                                        QueueItem.Song(Uri.parse(it.uri), it.title)
+                                    },
+                                    idx
+                                )
+                                isPlaying = true
+                            },
+                            onEnqueueLibrary = { song ->
+                                controller.enqueue(
+                                    QueueItem.Song(Uri.parse(song.uri), song.title)
+                                )
+                            },
+                            onRemoveLibrary = { song ->
+                                library = LibraryStore.remove(appCtx, song.uri)
+                            },
+                            onCreatePlaylist = { name ->
+                                playlists = PlaylistStore.create(appCtx, name)
+                            },
+                            onDeletePlaylist = { pl ->
+                                playlists = PlaylistStore.delete(appCtx, pl.id)
+                            },
+                            onPlayPlaylist = { pl, idx ->
+                                val items = pl.entries.mapNotNull { it.toQueueItem() }
+                                if (items.isNotEmpty()) {
+                                    controller.playItems(
+                                        items,
+                                        idx.coerceIn(0, items.lastIndex)
+                                    )
+                                    isPlaying = true
+                                }
+                            },
+                            onSetPlaylistEntries = { pl, entries ->
+                                playlists = PlaylistStore.setEntries(appCtx, pl.id, entries)
+                            }
+                        )
                     }
                 }
             }
@@ -694,7 +1043,7 @@ private fun LomixScreen(controller: PlayerController) {
             // Current mix strip
             Card(
                 shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = Ink),
+                colors = CardDefaults.cardColors(containerColor = StripBg),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
@@ -715,7 +1064,7 @@ private fun LomixScreen(controller: PlayerController) {
             // Saved mixes (v1.5)
             Card(
                 shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = Color.White),
+                colors = CardDefaults.cardColors(containerColor = CardSurface),
                 elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -831,6 +1180,7 @@ private fun LomixScreen(controller: PlayerController) {
                 OutlinedButton(onClick = { showSaveMixDialog = false }) { Text("Band") }
             }
         )
+    }
     }
 }
 
@@ -1274,4 +1624,472 @@ private fun queryDisplayName(context: Context, uri: Uri): String? {
     } catch (e: Exception) {
         null
     } ?: uri.lastPathSegment
+}
+
+/**
+ * Load a song's embedded album art off the main thread (v1.6).
+ * Returns null while loading and for songs without art (the caller
+ * draws the fallback gradient instead).
+ */
+@Composable
+private fun rememberArtwork(uri: Uri?): Bitmap? {
+    var bitmap by remember(uri) { mutableStateOf<Bitmap?>(null) }
+    val context = LocalContext.current
+    val handler = remember { Handler(Looper.getMainLooper()) }
+    LaunchedEffect(uri) {
+        bitmap = null
+        if (uri != null) {
+            Thread {
+                val loaded = Artwork.load(context.applicationContext, uri)
+                if (loaded != null) handler.post { bitmap = loaded }
+            }.start()
+        }
+    }
+    return bitmap
+}
+
+/** Small album-art thumb used by the library / playlist rows. */
+@Composable
+private fun ArtThumb(title: String, uri: Uri?, sizeDp: Int) {
+    val bitmap = rememberArtwork(uri)
+    val (gradA, gradB) = Artwork.fallbackFor(title)
+    Box(
+        modifier = Modifier
+            .size(sizeDp.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(Brush.linearGradient(listOf(gradA, gradB))),
+        contentAlignment = Alignment.Center
+    ) {
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Icon(
+                Icons.Filled.MusicNote,
+                contentDescription = null,
+                tint = Color.White.copy(alpha = 0.8f),
+                modifier = Modifier.size((sizeDp / 2).dp)
+            )
+        }
+    }
+}
+
+/**
+ * The Playlists tab (v1.6): the live queue on top, the remembered
+ * library of songs in the middle, and Poweramp-style named playlists
+ * below. All data operations are delegated to the caller; this panel
+ * only holds dialog/expansion state.
+ */
+@Composable
+private fun PlaylistsPanel(
+    queue: List<QueueItem>,
+    queueIndex: Int,
+    library: List<LibrarySong>,
+    stemSets: List<StemSet>,
+    playlists: List<Playlist>,
+    onJumpQueue: (Int) -> Unit,
+    onRemoveQueue: (Int) -> Unit,
+    onAddSongs: () -> Unit,
+    onPlayLibrary: (Int) -> Unit,
+    onEnqueueLibrary: (LibrarySong) -> Unit,
+    onRemoveLibrary: (LibrarySong) -> Unit,
+    onCreatePlaylist: (String) -> Unit,
+    onDeletePlaylist: (Playlist) -> Unit,
+    onPlayPlaylist: (Playlist, Int) -> Unit,
+    onSetPlaylistEntries: (Playlist, List<PlaylistEntry>) -> Unit
+) {
+    var expandedId by remember { mutableStateOf<String?>(null) }
+    var creating by remember { mutableStateOf(false) }
+    var newName by remember { mutableStateOf("") }
+    var addingToId by remember { mutableStateOf<String?>(null) }
+
+    Column {
+        // ---- Queue ----
+        Text("ABHI KI QUEUE", fontSize = 10.sp, color = MutedInk, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(6.dp))
+        if (queue.isEmpty()) {
+            Text(
+                "Queue khaali hai — koi gana chalayein ya neeche se jodein.",
+                fontSize = 12.sp,
+                color = MutedInk
+            )
+        } else {
+            queue.forEachIndexed { idx, item ->
+                val current = idx == queueIndex
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (current) SelectedTint else IdleTint)
+                        .clickable { onJumpQueue(idx) }
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (current) {
+                        Icon(
+                            Icons.Filled.PlayArrow,
+                            contentDescription = null,
+                            tint = AccentBlue,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    } else {
+                        Text(
+                            "${idx + 1}",
+                            fontSize = 12.sp,
+                            color = MutedInk,
+                            modifier = Modifier.width(16.dp)
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        item.displayTitle,
+                        fontSize = 13.sp,
+                        fontWeight = if (current) FontWeight.Bold else FontWeight.Normal,
+                        color = Ink,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Icon(
+                        Icons.Filled.Close,
+                        contentDescription = "Queue se hatayein",
+                        tint = MutedInk,
+                        modifier = Modifier
+                            .size(17.dp)
+                            .clickable { onRemoveQueue(idx) }
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // ---- Library ----
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("MERAY GANAY", fontSize = 10.sp, color = MutedInk, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.weight(1f))
+            OutlinedButton(onClick = onAddSongs) {
+                Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Ganay jodein", fontSize = 12.sp)
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        if (library.isEmpty()) {
+            Text(
+                "Abhi koi gana yaad nahi — gana chunein ya \"Ganay jodein\" se kai ganay aik saath daal dein, app inhein yaad rakh legi.",
+                fontSize = 12.sp,
+                color = MutedInk
+            )
+        } else {
+            library.forEachIndexed { idx, song ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(IdleTint)
+                        .clickable { onPlayLibrary(idx) }
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    ArtThumb(song.title, Uri.parse(song.uri), 38)
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        song.title,
+                        fontSize = 13.sp,
+                        color = Ink,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Icon(
+                        Icons.Filled.PlaylistAdd,
+                        contentDescription = "Queue mein jodein",
+                        tint = AccentBlue,
+                        modifier = Modifier
+                            .size(20.dp)
+                            .clickable { onEnqueueLibrary(song) }
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Icon(
+                        Icons.Filled.Delete,
+                        contentDescription = "Library se hatayein",
+                        tint = MutedInk,
+                        modifier = Modifier
+                            .size(18.dp)
+                            .clickable { onRemoveLibrary(song) }
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // ---- Playlists ----
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("PLAYLISTS", fontSize = 10.sp, color = MutedInk, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.weight(1f))
+            OutlinedButton(onClick = { newName = ""; creating = true }) {
+                Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Nayi playlist", fontSize = 12.sp)
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        if (playlists.isEmpty()) {
+            Text(
+                "Koi playlist nahi — apni pasand ke ganou ki list banayein, aik tap mein saari chalegi.",
+                fontSize = 12.sp,
+                color = MutedInk
+            )
+        } else {
+            playlists.forEach { playlist ->
+                val expanded = expandedId == playlist.id
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(IdleTint)
+                        .padding(horizontal = 10.dp, vertical = 8.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Filled.LibraryMusic,
+                            contentDescription = null,
+                            tint = AccentBlue,
+                            modifier = Modifier.size(19.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                playlist.name,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Ink,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                "${playlist.entries.size} ganay",
+                                fontSize = 11.sp,
+                                color = MutedInk
+                            )
+                        }
+                        Icon(
+                            Icons.Filled.PlayArrow,
+                            contentDescription = "Playlist chalayein",
+                            tint = AccentBlue,
+                            modifier = Modifier
+                                .size(22.dp)
+                                .clickable { onPlayPlaylist(playlist, 0) }
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Icon(
+                            if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                            contentDescription = "Kholain",
+                            tint = MutedInk,
+                            modifier = Modifier
+                                .size(20.dp)
+                                .clickable {
+                                    expandedId = if (expanded) null else playlist.id
+                                }
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Icon(
+                            Icons.Filled.Delete,
+                            contentDescription = "Playlist delete",
+                            tint = MutedInk,
+                            modifier = Modifier
+                                .size(18.dp)
+                                .clickable { onDeletePlaylist(playlist) }
+                        )
+                    }
+                    if (expanded) {
+                        Spacer(Modifier.height(8.dp))
+                        playlist.entries.forEachIndexed { eIdx, entry ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(CardSurface)
+                                    .clickable { onPlayPlaylist(playlist, eIdx) }
+                                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    entry.title,
+                                    fontSize = 12.sp,
+                                    color = Ink,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Icon(
+                                    Icons.Filled.ArrowUpward,
+                                    contentDescription = "Upar",
+                                    tint = MutedInk,
+                                    modifier = Modifier
+                                        .size(16.dp)
+                                        .clickable {
+                                            if (eIdx > 0) {
+                                                val copy = playlist.entries.toMutableList()
+                                                val tmp = copy[eIdx - 1]
+                                                copy[eIdx - 1] = copy[eIdx]
+                                                copy[eIdx] = tmp
+                                                onSetPlaylistEntries(playlist, copy)
+                                            }
+                                        }
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Icon(
+                                    Icons.Filled.ArrowDownward,
+                                    contentDescription = "Neeche",
+                                    tint = MutedInk,
+                                    modifier = Modifier
+                                        .size(16.dp)
+                                        .clickable {
+                                            if (eIdx < playlist.entries.lastIndex) {
+                                                val copy = playlist.entries.toMutableList()
+                                                val tmp = copy[eIdx + 1]
+                                                copy[eIdx + 1] = copy[eIdx]
+                                                copy[eIdx] = tmp
+                                                onSetPlaylistEntries(playlist, copy)
+                                            }
+                                        }
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Icon(
+                                    Icons.Filled.Close,
+                                    contentDescription = "Hatayein",
+                                    tint = MutedInk,
+                                    modifier = Modifier
+                                        .size(16.dp)
+                                        .clickable {
+                                            onSetPlaylistEntries(
+                                                playlist,
+                                                playlist.entries.filterIndexed { i, _ -> i != eIdx }
+                                            )
+                                        }
+                                )
+                            }
+                            Spacer(Modifier.height(5.dp))
+                        }
+                        OutlinedButton(
+                            onClick = { addingToId = playlist.id },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(
+                                Icons.Filled.Add,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text("Gana jodein", fontSize = 12.sp)
+                        }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+            }
+        }
+    }
+
+    // Create-playlist dialog
+    if (creating) {
+        AlertDialog(
+            onDismissRequest = { creating = false },
+            title = { Text("Nayi playlist") },
+            text = {
+                OutlinedTextField(
+                    value = newName,
+                    onValueChange = { newName = it },
+                    label = { Text("Playlist ka naam") },
+                    singleLine = true
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val name = newName.trim()
+                        if (name.isNotEmpty()) {
+                            onCreatePlaylist(name)
+                            creating = false
+                        }
+                    }
+                ) { Text("Banayein") }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { creating = false }) { Text("Band") }
+            }
+        )
+    }
+
+    // Add-entry dialog: every library song and tayyar gana, tap to add.
+    val addingTo = playlists.firstOrNull { it.id == addingToId }
+    if (addingTo != null) {
+        AlertDialog(
+            onDismissRequest = { addingToId = null },
+            title = { Text("${addingTo.name} mein jodein") },
+            text = {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    if (library.isEmpty() && stemSets.isEmpty()) {
+                        Text(
+                            "Library khaali hai — pehle ganay jodein.",
+                            fontSize = 12.sp,
+                            color = MutedInk
+                        )
+                    }
+                    library.forEach { song ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    onSetPlaylistEntries(
+                                        addingTo,
+                                        addingTo.entries + PlaylistEntry.ofSong(song)
+                                    )
+                                }
+                                .padding(vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            ArtThumb(song.title, Uri.parse(song.uri), 34)
+                            Spacer(Modifier.width(10.dp))
+                            Text(song.title, fontSize = 13.sp, color = Ink, maxLines = 1)
+                        }
+                    }
+                    stemSets.forEach { set ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    onSetPlaylistEntries(
+                                        addingTo,
+                                        addingTo.entries + PlaylistEntry.ofStem(set)
+                                    )
+                                }
+                                .padding(vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            ArtThumb(set.name, null, 34)
+                            Spacer(Modifier.width(10.dp))
+                            Text(
+                                "${set.name} (tayyar gana)",
+                                fontSize = 13.sp,
+                                color = Ink,
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                OutlinedButton(onClick = { addingToId = null }) { Text("Band") }
+            }
+        )
+    }
 }
