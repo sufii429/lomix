@@ -20,7 +20,7 @@ enum class AmbientSound(val label: String, val asset: String) {
     FIRE("Aag", "asset:///amb_fire.mp3"),
     OCEAN("Lehrein", "asset:///amb_ocean.mp3"),
     CRICKETS("Jhingur", "asset:///amb_crickets.mp3"),
-    CAFE("Cafe", "asset:///amb_cafe.mp3")
+    THUNDER("Garaj", "asset:///amb_thunder.mp3")
 }
 
 // ---------------------------------------------------------------------------
@@ -167,6 +167,26 @@ class PlayerController(context: Context) {
     // ---- Sleep timer ------------------------------------------------------
     private val handler = Handler(Looper.getMainLooper())
     private var sleepRunnable: Runnable? = null
+    private var fadeRunnable: Runnable? = null
+
+    /** 1.0 normally; ramps to 0 over the last seconds of the sleep
+     *  timer so the music fades out gently instead of cutting (v1.5).
+     *  Every volume setter multiplies by it. */
+    private var fadeFactor: Float = 1f
+
+    /** Recompute every player's volume from the mix state x fade. */
+    private fun refreshVolumes() {
+        songPlayer.volume = fadeFactor
+        stemPlayers.forEach { (kind, p) ->
+            p.volume = (stemVolumes[kind] ?: 100) / 100f * fadeFactor
+        }
+        if (rainLoaded != null) rainPlayer.volume = rainVolumePercent / 100f * fadeFactor
+        ambientPlayers.forEach { (sound, p) ->
+            p.volume = ambientVolume(sound) / 100f * fadeFactor
+        }
+        vinylPlayer.volume = VINYL_VOLUME * fadeFactor
+        cassettePlayer.volume = CASSETTE_VOLUME * fadeFactor
+    }
     var sleepMinutes: Int = 0
         private set
     private var sleepDeadlineMs: Long = 0L
@@ -180,15 +200,42 @@ class PlayerController(context: Context) {
         sleepMinutes = minutes
         sleepRunnable?.let { handler.removeCallbacks(it) }
         sleepRunnable = null
+        fadeRunnable?.let { handler.removeCallbacks(it) }
+        fadeRunnable = null
+        if (fadeFactor != 1f) {
+            fadeFactor = 1f
+            refreshVolumes()
+        }
         if (minutes > 0) {
-            sleepDeadlineMs = SystemClock.uptimeMillis() + minutes * 60_000L
+            val totalMs = minutes * 60_000L
+            sleepDeadlineMs = SystemClock.uptimeMillis() + totalMs
             val r = Runnable {
                 sleepMinutes = 0
                 sleepRunnable = null
                 pauseAll()
+                // Restore full volumes while paused, ready for the
+                // next Play (which must not start faded out).
+                fadeFactor = 1f
+                refreshVolumes()
             }
             sleepRunnable = r
-            handler.postDelayed(r, minutes * 60_000L)
+            handler.postDelayed(r, totalMs)
+            // Gentle fade over the last FADE_SECONDS of the timer.
+            val fadeMs = FADE_SECONDS * 1000L
+            if (totalMs > fadeMs) {
+                val steps = FADE_SECONDS
+                val fr = object : Runnable {
+                    private var step = 0
+                    override fun run() {
+                        step++
+                        fadeFactor = (1f - step.toFloat() / steps).coerceAtLeast(0f)
+                        refreshVolumes()
+                        if (step < steps) handler.postDelayed(this, 1000L)
+                    }
+                }
+                fadeRunnable = fr
+                handler.postDelayed(fr, totalMs - fadeMs)
+            }
         }
     }
 
@@ -272,7 +319,7 @@ class PlayerController(context: Context) {
             val player = ExoPlayer.Builder(appContext).build()
             player.setMediaItem(MediaItem.fromUri(Uri.fromFile(file)))
             player.prepare()
-            player.volume = (stemVolumes[kind] ?: 100) / 100f
+            player.volume = (stemVolumes[kind] ?: 100) / 100f * fadeFactor
             player.playbackParameters = PlaybackParameters(speed, 1.0f)
             val fxOne = FxController()
             fxOne.attach(player.audioSessionId)
@@ -301,7 +348,7 @@ class PlayerController(context: Context) {
 
     fun applyStemVolume(kind: StemKind, percent: Int) {
         stemVolumes[kind] = percent
-        stemPlayers.firstOrNull { it.first == kind }?.second?.volume = percent / 100f
+        stemPlayers.firstOrNull { it.first == kind }?.second?.volume = percent / 100f * fadeFactor
     }
 
     // Stem alignment ticker: every STEM_TICK_MS, any stem that has
@@ -402,7 +449,7 @@ class PlayerController(context: Context) {
             rainPlayer.prepare()
             rainLoaded = choice
         }
-        rainPlayer.volume = volumePercent / 100f
+        rainPlayer.volume = volumePercent / 100f * fadeFactor
         if (isPlaying) rainPlayer.play() else rainPlayer.pause()
         onStateChanged?.invoke()
     }
@@ -418,7 +465,7 @@ class PlayerController(context: Context) {
                 prepare()
             }
         }
-        player.volume = volumePercent / 100f
+        player.volume = volumePercent / 100f * fadeFactor
         if (on && isPlaying) player.play() else player.pause()
         onStateChanged?.invoke()
     }
@@ -439,6 +486,60 @@ class PlayerController(context: Context) {
             stopWobble()
         }
         onStateChanged?.invoke()
+    }
+
+    /**
+     * Snapshot the whole mix for the offline exporter (v1.5): the song
+     * or the loaded stems with their gains, the speed and Lofi Rang
+     * flags, and every layer that is on, at its live volume.
+     */
+    fun buildExportRequest(): ExportRequest? {
+        val music = mutableListOf<MusicPart>()
+        if (stemMode) {
+            val set = stemSet ?: return null
+            for ((kind, fileName) in set.stems) {
+                val file = StemStore.stemFile(appContext, set, fileName)
+                if (file.exists()) {
+                    music.add(
+                        MusicPart(
+                            AudioSource.FileSource(file),
+                            (stemVolumes[kind] ?: 100) / 100f
+                        )
+                    )
+                }
+            }
+            if (music.isEmpty()) return null
+        } else {
+            val uri = songUri ?: return null
+            music.add(MusicPart(AudioSource.UriSource(uri), 1f))
+        }
+        val layers = mutableListOf<LayerPart>()
+        if (rainChoice != RainChoice.NONE) {
+            val asset = when (rainChoice) {
+                RainChoice.GENTLE -> "rain_gentle.mp3"
+                RainChoice.HEAVY -> "rain_heavy.mp3"
+                RainChoice.TIN -> "rain_tin.mp3"
+                RainChoice.NONE -> "rain_gentle.mp3" // unreachable
+            }
+            layers.add(LayerPart(AudioSource.AssetSource(asset), rainVolumePercent / 100f))
+        }
+        if (vinylOn) {
+            layers.add(LayerPart(AudioSource.AssetSource("vinyl_crackle.mp3"), VINYL_VOLUME))
+        }
+        if (cassetteOn) {
+            layers.add(LayerPart(AudioSource.AssetSource("tape_hiss.mp3"), CASSETTE_VOLUME))
+        }
+        AmbientSound.values().forEach { sound ->
+            if (ambientOn(sound)) {
+                layers.add(
+                    LayerPart(
+                        AudioSource.AssetSource(sound.asset.removePrefix("asset:///")),
+                        ambientVolume(sound) / 100f
+                    )
+                )
+            }
+        }
+        return ExportRequest(activeTitle, music, speed, garam, naram, geela, layers)
     }
 
     /** Master play: the active source plus whichever layers are on. */
@@ -523,6 +624,7 @@ class PlayerController(context: Context) {
         private const val WOBBLE_DEPTH = 0.004
         private const val WOBBLE_PERIOD_S = 5.0
         private const val WOBBLE_STEP_MS = 150L
+        private const val FADE_SECONDS = 20
         private const val STEM_TICK_MS = 500L
         private const val STEM_ALIGN_TOLERANCE_MS = 90L
         private const val RAIN_GENTLE_ASSET = "asset:///rain_gentle.mp3"

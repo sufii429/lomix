@@ -181,3 +181,28 @@ Three changes in one build, on Mazeen's calls of 2026-11-05:
    the parked sync idea, reused where it belongs. Per-stem volume
    sliders (0–150%) work like Samsung's Audio Eraser. Speed, Lofi
    Rang, Mahaul and the sleep timer all apply to stem playback too.
+
+## v1.5.0 — Garaj in, Café out, saved mixes, export
+
+Mazeen approved all four of Muse's suggestions plus his own two
+calls, in one build:
+
+1. **Café deleted** (his call — the synthesized murmur was the weakest
+   layer) and **Garaj added**: a 90 s seamless thunder loop
+   (`make_thunder.py`, distant rolling rumbles on near-silence),
+   joining Aag / Lehrein / Jhingur in the Mahaul tab.
+2. **Hissay quick buttons**: Sab aam (all 100%), Karaoke (vocals 0),
+   Drum zyada (drums 140, bass 110, vocals 80).
+3. **Sleep-timer fade-out**: over the timer's last 20 seconds every
+   player's volume ramps to zero (a single fadeFactor multiplies every
+   volume the controller sets), then pause; volumes restore while
+   paused so the next Play starts full.
+4. **Meray Mix (presets)**: the whole mix — speed, FX toggles, rain,
+   ambient switches/volumes, stem volumes — saved under a name in
+   SharedPreferences (MixPresets.kt) and re-applied with one tap.
+5. **Export to device**: OfflineExporter rebuilds the mix sample by
+   sample (decode to canonical PCM → sum the parts → WSOLA stretch
+   to the mix speed → the same EQ curves + Schroeder reverb → add the
+   looping layers → AAC in an .m4a) and saves it to Music/Lomix via
+   MediaStore. The Cassette pitch wobble is the one live effect not
+   rendered (its hiss is); ±0.4% shimmer is inaudible in an export.

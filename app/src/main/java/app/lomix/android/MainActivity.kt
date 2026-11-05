@@ -39,11 +39,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LibraryMusic
-import androidx.compose.material.icons.filled.LocalCafe
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.NightsStay
@@ -66,7 +66,9 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
@@ -214,12 +216,22 @@ private fun LomixScreen(controller: PlayerController) {
         mutableStateMapOf<StemKind, Int>().apply { putAll(controller.stemVolumes) }
     }
 
+    // Saved mixes (presets, v1.5).
+    var presets by remember { mutableStateOf(MixPresetStore.load(appCtx)) }
+    var showSaveMixDialog by remember { mutableStateOf(false) }
+    var mixNameInput by remember { mutableStateOf("") }
+
     var sleepMinutes by remember { mutableIntStateOf(controller.sleepMinutes) }
     var sleepRemainingMs by remember { mutableLongStateOf(controller.sleepRemainingMs) }
     // Last sleep value this UI pushed into the controller; the poll below
     // only adopts the controller's value when it differs from this (i.e.
     // the timer fired on its own), never overwriting a fresh user tap.
     var lastSleepPushed by remember { mutableIntStateOf(controller.sleepMinutes) }
+
+    // Export (v1.5).
+    var exportRunning by remember { mutableStateOf(false) }
+    var exportProgress by remember { mutableIntStateOf(0) }
+    var exportStatus by remember { mutableStateOf("") }
 
     var selectedTab by remember { mutableIntStateOf(0) }
 
@@ -335,6 +347,34 @@ private fun LomixScreen(controller: PlayerController) {
                 RainChoice.TIN -> "Tin Wali Chhat"
             }
         )
+    }
+
+    // Applying a preset writes every piece of state; the LaunchedEffects
+    // carry speed/FX/rain/vinyl/cassette into the controller, while the
+    // ambient layers and stem volumes are applied directly.
+    fun applyPreset(p: MixPreset) {
+        speed = p.speed
+        garam = p.garam
+        naram = p.naram
+        geela = p.geela
+        vinyl = p.vinyl
+        cassette = p.cassette
+        rainChoice = runCatching { RainChoice.valueOf(p.rainChoice) }
+            .getOrDefault(RainChoice.GENTLE)
+        rainVolume = p.rainVolume
+        AmbientSound.values().forEach { sound ->
+            val (on, vol) = p.ambient[sound.name] ?: (false to 50)
+            ambientOn[sound] = on
+            ambientVol[sound] = vol
+            controller.applyAmbient(sound, on, vol)
+        }
+        p.stemVolumes.forEach { (kindName, vol) ->
+            val kind = StemKind.values().firstOrNull { it.name == kindName }
+            if (kind != null) {
+                stemVolumes[kind] = vol
+                controller.applyStemVolume(kind, vol)
+            }
+        }
     }
 
     MaterialTheme(
@@ -491,6 +531,65 @@ private fun LomixScreen(controller: PlayerController) {
                         }
                     }
                 }
+                    // Export the mix to the device (v1.5)
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedButton(
+                        onClick = {
+                            val req = controller.buildExportRequest()
+                            if (req != null && !exportRunning) {
+                                exportRunning = true
+                                exportProgress = 0
+                                exportStatus = ""
+                                Thread {
+                                    try {
+                                        val tmp = OfflineExporter.export(
+                                            appCtx, req
+                                        ) { p -> mainHandler.post { exportProgress = p } }
+                                        val safeName = req.title
+                                            .replace(Regex("[^A-Za-z0-9 _-]"), "")
+                                            .trim()
+                                            .ifEmpty { "Lomix mix" }
+                                        val where = OfflineExporter.saveToMusic(
+                                            appCtx, tmp, "$safeName (Lomix mix).m4a"
+                                        )
+                                        tmp.delete()
+                                        mainHandler.post {
+                                            exportRunning = false
+                                            exportStatus = "Save ho gaya: $where"
+                                        }
+                                    } catch (e: Exception) {
+                                        mainHandler.post {
+                                            exportRunning = false
+                                            exportStatus =
+                                                "Export nahi ho saka — dobara koshish karein"
+                                        }
+                                    }
+                                }.start()
+                            }
+                        },
+                        enabled = hasSource && !exportRunning,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
+                    ) {
+                        Icon(
+                            Icons.Filled.Download,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            if (exportRunning) "Mix ban raha hai… $exportProgress%"
+                            else "Mix export karein"
+                        )
+                    }
+                    if (exportStatus.isNotEmpty()) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            exportStatus,
+                            fontSize = 12.sp,
+                            color = MutedInk,
+                            modifier = Modifier.padding(horizontal = 16.dp)
+                        )
+                    }
                 Spacer(Modifier.height(10.dp))
             }
 
@@ -611,8 +710,127 @@ private fun LomixScreen(controller: PlayerController) {
                 }
             }
 
+            Spacer(Modifier.height(16.dp))
+
+            // Saved mixes (v1.5)
+            Card(
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("MERAY MIX", fontSize = 10.sp, color = MutedInk, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.weight(1f))
+                        OutlinedButton(onClick = {
+                            mixNameInput = ""
+                            showSaveMixDialog = true
+                        }) {
+                            Text("Save karein", fontSize = 12.sp)
+                        }
+                    }
+                    if (presets.isEmpty()) {
+                        Text(
+                            "Koi mix save nahi hai — jo mix acha lage, usay naam de kar save kar lein, phir aik tap mein wapas ajayega.",
+                            fontSize = 12.sp,
+                            color = MutedInk
+                        )
+                    } else {
+                        Spacer(Modifier.height(8.dp))
+                        presets.forEach { preset ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(IdleTint)
+                                    .clickable { applyPreset(preset) }
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    Icons.Filled.LibraryMusic,
+                                    contentDescription = null,
+                                    tint = AccentBlue,
+                                    modifier = Modifier.size(19.dp)
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    preset.name,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Ink,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Icon(
+                                    Icons.Filled.Delete,
+                                    contentDescription = "Delete",
+                                    tint = MutedInk,
+                                    modifier = Modifier
+                                        .size(19.dp)
+                                        .clickable {
+                                            presets = MixPresetStore.delete(appCtx, preset.name)
+                                        }
+                                )
+                            }
+                            Spacer(Modifier.height(8.dp))
+                        }
+                    }
+                }
+            }
+
             Spacer(Modifier.height(12.dp))
         }
+    }
+
+    if (showSaveMixDialog) {
+        AlertDialog(
+            onDismissRequest = { showSaveMixDialog = false },
+            title = { Text("Mix save karein") },
+            text = {
+                OutlinedTextField(
+                    value = mixNameInput,
+                    onValueChange = { mixNameInput = it },
+                    label = { Text("Mix ka naam") },
+                    singleLine = true
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val name = mixNameInput.trim()
+                        if (name.isNotEmpty()) {
+                            presets = MixPresetStore.add(
+                                appCtx,
+                                MixPreset(
+                                    name = name,
+                                    speed = speed,
+                                    garam = garam,
+                                    naram = naram,
+                                    geela = geela,
+                                    vinyl = vinyl,
+                                    cassette = cassette,
+                                    rainChoice = rainChoice.name,
+                                    rainVolume = rainVolume,
+                                    ambient = AmbientSound.values().associate { sound ->
+                                        sound.name to (
+                                            (ambientOn[sound] ?: false) to
+                                                (ambientVol[sound] ?: 50)
+                                            )
+                                    },
+                                    stemVolumes = stemVolumes.entries
+                                        .associate { it.key.name to it.value }
+                                )
+                            )
+                        }
+                        showSaveMixDialog = false
+                    }
+                ) { Text("Save") }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { showSaveMixDialog = false }) { Text("Band") }
+            }
+        )
     }
 }
 
@@ -795,10 +1013,10 @@ private fun MahaulPanel(
                 { onAmbientVolume(AmbientSound.CRICKETS, it) }
             )
             AmbientLayerRow(
-                "Café", "Halka café mahaul, bartanou ki khanak", Icons.Filled.LocalCafe,
-                ambientOn[AmbientSound.CAFE] ?: false, ambientVol[AmbientSound.CAFE] ?: 50,
-                { onAmbientToggle(AmbientSound.CAFE) },
-                { onAmbientVolume(AmbientSound.CAFE, it) }
+                "Garaj", "Door ki garaj — barsaat ke saath kabhi kabhi", Icons.Filled.Thunderstorm,
+                ambientOn[AmbientSound.THUNDER] ?: false, ambientVol[AmbientSound.THUNDER] ?: 50,
+                { onAmbientToggle(AmbientSound.THUNDER) },
+                { onAmbientVolume(AmbientSound.THUNDER, it) }
             )
         }
     }
@@ -985,6 +1203,34 @@ private fun HissayPanel(
         }
         if (active != null) {
             Spacer(Modifier.height(4.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("Sab aam", "Karaoke", "Drum zyada").forEach { label ->
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(IdleTint)
+                            .border(1.dp, CardBorder, RoundedCornerShape(50))
+                            .clickable {
+                                active.stems.keys.forEach { kind ->
+                                    val v = when (label) {
+                                        "Karaoke" -> if (kind == StemKind.VOCALS) 0 else 100
+                                        "Drum zyada" -> when (kind) {
+                                            StemKind.DRUMS -> 140
+                                            StemKind.BASS -> 110
+                                            StemKind.VOCALS -> 80
+                                            else -> 100
+                                        }
+                                        else -> 100
+                                    }
+                                    onVolume(kind, v)
+                                }
+                            }
+                            .padding(horizontal = 12.dp, vertical = 7.dp)
+                    ) {
+                        Text(label, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Ink)
+                    }
+                }
+            }
             Text("Hissou ki awaz", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Ink)
             StemKind.values().filter { active.stems.containsKey(it) }.forEach { kind ->
                 val vol = volumes[kind] ?: 100
