@@ -107,7 +107,7 @@ class PlayerController(context: Context) {
         private set
     var beatsStyle: BeatsStyle = BeatsStyle.BALANCED
         private set
-    var beatsVolumePercent: Int = 70
+    var beatsVolumePercent: Int = 60
         private set
 
     /** Detected grid for the current song; null while unknown/failed. */
@@ -122,8 +122,8 @@ class PlayerController(context: Context) {
     var bpmAdjust: Double = 0.0
         private set
 
-    /** Which loop pattern is loaded: true = dynamic (beats_b). */
-    private var beatsLoadedDynamic: Boolean? = null
+    /** Which loop pattern asset is currently loaded into beatsPlayer. */
+    private var beatsLoadedAsset: String? = null
 
     /** Incremented per song so stale detection results are dropped. */
     private var detectGeneration: Int = 0
@@ -337,13 +337,18 @@ class PlayerController(context: Context) {
 
     /** Load the loop for the current style, set rate, volume and EQ. */
     private fun ensureBeatsReady() {
-        val dynamic = beatsStyle == BeatsStyle.DYNAMIC
-        if (beatsLoadedDynamic != dynamic) {
-            beatsPlayer.setMediaItem(
-                MediaItem.fromUri(if (dynamic) BEATS_DYNAMIC_ASSET else BEATS_STANDARD_ASSET)
-            )
+        // Styles pick the pattern's fullness (v1.2.1): Smooth is the
+        // sparsest, Dynamic the fullest; the middle styles share the
+        // standard-soft pattern and differ only in EQ character.
+        val asset = when (beatsStyle) {
+            BeatsStyle.SMOOTH -> BEATS_SPARSE_ASSET
+            BeatsStyle.DYNAMIC -> BEATS_DYNAMIC_ASSET
+            else -> BEATS_STANDARD_ASSET
+        }
+        if (beatsLoadedAsset != asset) {
+            beatsPlayer.setMediaItem(MediaItem.fromUri(asset))
             beatsPlayer.prepare()
-            beatsLoadedDynamic = dynamic
+            beatsLoadedAsset = asset
             beatsFx.attach(beatsPlayer.audioSessionId)
         }
         beatsFx.apply(beatsStyle)
@@ -398,6 +403,12 @@ class PlayerController(context: Context) {
         val offset = beatInfo?.offsetMs ?: 0.0
         val songPos = songPlayer.currentPosition.toDouble()
         var phase = (songPos - offset) % loopSongMs
+        if (phase < 0) phase += loopSongMs
+        // Laid-back feel: in Mazeen's reference mix the added beats sit
+        // a uniform ~35 ms BEHIND the song's grid — that slight lateness
+        // is a big part of the relaxed lofi feel, so the loop runs the
+        // same small lag behind the detected grid here.
+        phase -= BEATS_LAG_MS
         if (phase < 0) phase += loopSongMs
         val expected = (phase * (effBpm / BASE_BEATS_BPM)).toLong()
             .coerceIn(0L, (BEATS_LOOP_MS - 1).toLong())
@@ -497,11 +508,13 @@ class PlayerController(context: Context) {
         private const val CASSETTE_ASSET = "asset:///tape_hiss.mp3"
         private const val BEATS_STANDARD_ASSET = "asset:///beats_a.ogg"
         private const val BEATS_DYNAMIC_ASSET = "asset:///beats_b.ogg"
+        private const val BEATS_SPARSE_ASSET = "asset:///beats_c.ogg"
         private const val BASE_BEATS_BPM = 80.0
         private const val FALLBACK_BPM = 90.0
         private const val LOOP_BEATS = 8
         private const val BEATS_LOOP_MS = 6000.0
         private const val BEATS_TICK_MS = 250L
         private const val BEATS_ALIGN_TOLERANCE_MS = 50.0
+        private const val BEATS_LAG_MS = 30.0
     }
 }

@@ -1,15 +1,32 @@
 #!/usr/bin/env python3
-"""Generate Lomix's lofi drum loops (v1.2 beats update).
+"""Generate Lomix's lofi drum loops — v2, the "vibe fix" (v1.2.1).
 
-Two seamless 2-bar loops at a fixed base tempo of 80 BPM (6.000 s):
-  beats_a.ogg - standard boom-bap lofi pattern (most styles)
-  beats_b.ogg - busier "dynamic" pattern (ghost notes, extra 16ths)
+Mazeen's verdict on the v1.2.0 loops: the auto-sync worked, but the
+drums felt separate from the song. His three ingredients for the demo
+mix's magic: SOFTNESS of sound, LIGHT AIRY beats, and REVERB (goonj) —
+under one character: "peaceful rainy chill lofi mix". Measured target
+from his own remix of Mann Ki Lagan: spectral centroid ~1290 Hz and
+only ~5% of energy above 6 kHz (the v1 loops measured ~1560 Hz / 13%
+— far too bright and hard).
 
-The app time-stretches these to the detected song tempo at runtime, so
-the base tempo only sets the stretch centre. Loops are rendered as
-THREE consecutive copies of the pattern and the middle copy is cut
-out, which makes every decay tail wrap perfectly = a truly seamless
-loop. Output is Ogg Vorbis (gapless, sample-exact length, unlike mp3).
+So v2 is a different kit and a different attitude:
+  - kick   : soft thump, attack ramped (no click), 95 -> 38 Hz body
+  - snare  : a brush sweep (dark filtered noise) + soft body tone;
+             rim pings for the sparse pattern
+  - hats   : darker (5.4 kHz floor), quieter, mostly offbeat = airy
+  - reverb : a generated decaying-noise IR convolved over the whole
+             loop (goonj baked in, identical on every device), and a
+             whisper of circular vinyl dust on top
+  - swing 60%, small per-hit velocity/timing humanisation
+  - everything lowpassed ~6.8 kHz, soft-clipped, gentle
+
+Three seamless 2-bar loops at 80 BPM (6.000 s), one per fullness:
+  beats_c.ogg - sparse  (Smooth style)
+  beats_a.ogg - standard soft (Balanced / Warm / Bass Boost)
+  beats_b.ogg - fuller soft (Dynamic) — fuller, never harder
+
+Rendered as THREE copies and cut to the middle one so every decay and
+reverb tail wraps seamlessly. Ogg Vorbis (gapless; mp3 is not).
 
 Run:  python make_beats.py        (writes into app/src/main/assets/)
 """
@@ -17,7 +34,8 @@ import subprocess
 from pathlib import Path
 
 import numpy as np
-from scipy.signal import butter, sosfiltfilt
+import soundfile as sf
+from scipy.signal import butter, fftconvolve, sosfilt, sosfiltfilt
 
 SR = 44100
 BPM = 80.0
@@ -25,63 +43,106 @@ BEAT = 60.0 / BPM            # 0.75 s
 BAR = 4 * BEAT               # 3.0 s
 LOOP = 2 * BAR               # 6.0 s
 STEP = BEAT / 4              # 16th note
-SWING = 0.57                 # off-8th swing
-rng = np.random.default_rng(42)
+SWING = 0.55                 # mild swing; his reference also sits laid-back
+rng = np.random.default_rng(11)
 
 ASSETS = Path(__file__).parent / "app" / "src" / "main" / "assets"
 
 
-# ---------- one-shot drum voices (mono float32) ----------
-def kick(dur=0.30):
+def bp_noise(dur, lo, hi, seed):
+    r = np.random.default_rng(seed)
+    n = r.standard_normal(int(SR * dur))
+    sos = butter(2, [lo, hi], btype="band", fs=SR, output="sos")
+    return sosfiltfilt(sos, n)
+
+
+# ---------- voices measured against his reference (v3) ----------
+# His exposed beats-only window (remix content 56-60 s, 68 BPM grid)
+# measured hit by hit:
+#   kick  = soft KNOCK, centroid ~1400-1650 Hz, ~50% of energy below
+#           150 Hz, ~70% left at +0.1 s and ~30-45% at +0.2 s — a
+#           woody knock with a mid tap, not a clean sub sine
+#   brush = centroid ~1800 Hz, ~35% of energy in 900-3400 Hz, with a
+#           long reverb tail (still ~90% energy at +0.35 s)
+#   hats  = NO bright hats at all: no hit in the window has more than
+#           15% of energy above 6 kHz — only a faint dark tick wash
+#           (centroid ~2000 Hz, about 1/3 of the main hits' strength)
+def kick_soft():
+    dur = 0.30
     t = np.arange(int(SR * dur)) / SR
-    freq = 43 + 75 * np.exp(-t * 26)
+    freq = 44 + 86 * np.exp(-t * 22)
     phase = np.cumsum(freq) / SR * 2 * np.pi
-    body = np.sin(phase) * np.exp(-t * 10.5)
-    click = rng.standard_normal(int(SR * 0.004)) * np.exp(-np.arange(int(SR * 0.004)) / 40.0)
-    out = body.copy()
-    out[: len(click)] += click * 0.35
-    return out * 0.95
+    attack = 1 - np.exp(-t * 130)
+    body = np.sin(phase) * np.exp(-t * 11) * attack * 0.85
+    knock = bp_noise(dur, 280, 1600, 5) * np.exp(-t * 38) * 0.55
+    return body + knock
 
 
-def snare(dur=0.16, gain=1.0):
+def brush(gain=1.0, seed=6):
+    dur = 0.26
     t = np.arange(int(SR * dur)) / SR
-    noise = rng.standard_normal(len(t))
-    sos = butter(2, [1400, 5200], btype="band", fs=SR, output="sos")
-    bp = sosfiltfilt(sos, noise) * np.exp(-t * 26)
-    tone = np.sin(2 * np.pi * 186 * t) * np.exp(-t * 34) * 0.55
-    return (bp * 1.6 + tone) * 0.5 * gain
+    noise = bp_noise(dur, 700, 3200, seed)
+    env = (1 - np.exp(-t * 120)) * np.exp(-t * 11)
+    tone = np.sin(2 * np.pi * 185 * t) * np.exp(-t * 28) * 0.35
+    return (noise * env * 1.3 + tone) * 0.55 * gain
 
 
-def hat(open_hat=False, gain=1.0):
-    dur = 0.30 if open_hat else 0.05
+def tick_soft(seed=8):
+    """The faint dark tick that replaces hats in his reference."""
+    dur = 0.055
     t = np.arange(int(SR * dur)) / SR
-    noise = rng.standard_normal(len(t))
-    sos = butter(2, 7600, btype="high", fs=SR, output="sos")
-    hp = sosfiltfilt(sos, noise)
-    decay = 11 if open_hat else 68
-    return hp * np.exp(-t * decay) * 0.32 * gain
+    noise = bp_noise(dur, 1300, 3600, seed)
+    return noise * np.exp(-t * 62) * 0.34
 
 
-def shaker(gain=1.0):
-    t = np.arange(int(SR * 0.10)) / SR
-    noise = rng.standard_normal(len(t))
-    sos = butter(2, [4800, 9800], btype="band", fs=SR, output="sos")
-    bp = sosfiltfilt(sos, noise)
-    env = np.sin(np.pi * np.clip(t / 0.10, 0, 1)) ** 2
-    return bp * env * 0.20 * gain
+def rim():
+    dur = 0.08
+    t = np.arange(int(SR * dur)) / SR
+    ping = np.sin(2 * np.pi * 1560 * t) * np.exp(-t * 58) * 0.30
+    tick = bp_noise(dur, 1500, 2400, 7) * np.exp(-t * 95) * 0.20
+    return ping + tick
 
 
-KICK, SNARE, HAT_C, HAT_O, SHAKER = kick(), snare(), hat(), hat(True), shaker()
-GHOST = snare(gain=0.34)
+def hat_soft(open_hat=False, seed=8):
+    dur = 0.38 if open_hat else 0.075
+    t = np.arange(int(SR * dur)) / SR
+    r = np.random.default_rng(seed)
+    n = r.standard_normal(len(t))
+    sos = butter(2, 5000, btype="high", fs=SR, output="sos")
+    hp = sosfiltfilt(sos, n)
+    decay = 10 if open_hat else 52
+    return hp * np.exp(-t * decay) * (0.16 if open_hat else 0.20)
 
 
+def shaker_soft():
+    dur = 0.11
+    t = np.arange(int(SR * dur)) / SR
+    noise = bp_noise(dur, 4200, 8600, 9)
+    env = np.sin(np.pi * np.clip(t / dur, 0, 1)) ** 2
+    return noise * env * 0.11
+
+
+KICK = kick_soft()
+BRUSH = brush()
+BRUSH_GHOST = brush(gain=0.42, seed=16)
+RIM = rim()
+TICK = tick_soft()
+HAT_C = hat_soft()
+HAT_O = hat_soft(open_hat=True)
+SHAKER = shaker_soft()
+
+
+# ---------- placement ----------
 def place(buf, sample, start_s, pan=0.0):
-    """Add a mono sample into the stereo buffer with constant-power pan."""
     i0 = int(round(start_s * SR))
-    i1 = min(buf.shape[1], i0 + len(sample))
-    if i0 >= buf.shape[1]:
+    trim = 0
+    if i0 < 0:  # humanise jitter can push a step-0 hit slightly early
+        trim = -i0
+        i0 = 0
+    i1 = min(buf.shape[1], i0 + (len(sample) - trim))
+    if i1 <= i0:
         return
-    seg = sample[: i1 - i0]
+    seg = sample[trim: trim + (i1 - i0)]
     l = np.cos((pan + 1) * np.pi / 4)
     r = np.sin((pan + 1) * np.pi / 4)
     buf[0, i0:i1] += seg * l
@@ -89,66 +150,158 @@ def place(buf, sample, start_s, pan=0.0):
 
 
 def swung(step_idx):
-    """Time (s) of a 16th step inside one 2-bar loop, with 8th swing."""
     t = step_idx * STEP
-    if (step_idx % 4) == 2:  # the off-8th inside each beat pair
+    if (step_idx % 4) == 2:  # off-8th gets the swing delay
         t += (SWING - 0.5) * 2 * STEP
     return t
 
 
-def render(pattern):
-    """pattern: list of (step, sample, gain, pan) over 32 steps (2 bars)."""
-    total = LOOP * 3 + 0.5
+def humanize(events, seed):
+    """Tiny per-hit velocity/timing variation, fixed per pattern."""
+    r = np.random.default_rng(seed)
+    out = []
+    for step, sample, gain, pan in events:
+        out.append((step, sample, gain * float(r.uniform(0.88, 1.06)),
+                    pan, float(r.uniform(-0.0035, 0.0035))))
+    return out
+
+
+# ---------- patterns (32 steps = 2 bars) ----------
+# The standard pattern IS his reference, transcribed: brush on the
+# 2 & 4 backbeat (steps 4 and 12 of each bar); soft knock kicks
+# dancing around it — bar 1 steps 2,3,6,8,11,14 (note: NO kick on
+# beat 1, and a double-kick pickup on steps 2-3), bar 2 steps
+# 8,11,14; a faint dark tick on the 8ths instead of hats.
+def pattern_standard():
+    ev = []
+    kicks = {0: [(2, 0.90), (3, 0.80), (6, 0.95), (8, 0.90), (11, 0.85), (14, 0.95)],
+             1: [(8, 0.95), (11, 0.85), (14, 0.95)]}
+    for bar in range(2):
+        o = bar * 16
+        for s, g in kicks[bar]:
+            ev.append((o + s, KICK, g, 0.0))
+        ev += [(o + 4, BRUSH, 1.0, -0.04), (o + 12, BRUSH, 1.0, -0.04)]
+        for h in range(0, 16, 2):
+            ev.append((o + h, TICK, 0.55, 0.15))
+    return humanize(ev, 22)
+
+
+def pattern_sparse():
+    ev = []
+    for bar in range(2):
+        o = bar * 16
+        ev.append((o + 8, KICK, 0.95, 0.0))
+        if bar == 0:
+            ev.append((o + 14, KICK, 0.90, 0.0))
+        ev += [(o + 4, BRUSH, 1.0, -0.04), (o + 12, BRUSH, 1.0, -0.04)]
+        for h in (2, 6, 10, 14):
+            ev.append((o + h, TICK, 0.45, 0.15))
+    return humanize(ev, 21)
+
+
+def pattern_fuller():
+    ev = []
+    kicks = {0: [(0, 0.80), (2, 0.90), (3, 0.80), (6, 0.95), (8, 0.90), (11, 0.85), (14, 0.95)],
+             1: [(0, 0.80), (8, 0.95), (11, 0.85), (14, 0.95)]}
+    for bar in range(2):
+        o = bar * 16
+        for s, g in kicks[bar]:
+            ev.append((o + s, KICK, g, 0.0))
+        ev += [(o + 4, BRUSH, 1.0, -0.04), (o + 12, BRUSH, 1.0, -0.04)]
+        for h in range(16):
+            ev.append((o + h, TICK, 0.5 if h % 2 == 0 else 0.32, 0.15))
+        for s in (0, 4, 8, 12):
+            ev.append((o + s, SHAKER, 0.35, -0.22))
+    ev += [(16 + 15, BRUSH_GHOST, 1.0, -0.04)]
+    return humanize(ev, 23)
+
+
+# ---------- reverb (goonj) ----------
+def make_ir(seed):
+    """2.2 s decaying-noise stereo IR, darker as it decays (his
+    reference's brush tails are long — energy still ~90% at +0.35 s
+    in the exposed window, most of which is this goonj)."""
+    dur = 2.2
+    n = int(SR * dur)
+    r = np.random.default_rng(seed)
+    noise = r.standard_normal(n)
+    out = np.zeros(n)
+    seg = n // 6
+    for s in range(6):
+        cutoff = [4800, 3800, 2900, 2200, 1650, 1250][s]
+        sos = butter(1, cutoff, btype="low", fs=SR, output="sos")
+        part = sosfilt(sos, noise[s * seg:(s + 1) * seg])
+        out[s * seg:(s + 1) * seg] = part
+    t = np.arange(n) / SR
+    out *= np.exp(-t * 2.8)
+    out *= (1 - np.exp(-t * 90))           # 11 ms bloom, keeps hits clear
+    return out / (np.max(np.abs(out)) + 1e-9)
+
+
+IR_L = make_ir(31)
+IR_R = make_ir(47)
+WET = 0.38
+
+
+def dust_ring():
+    """Loop-length circular vinyl dust: periodic by construction."""
+    n = int(SR * LOOP)
+    ring = np.zeros(n)
+    r = np.random.default_rng(53)
+    sos = butter(1, 4800, btype="low", fs=SR, output="sos")
+    ring += sosfiltfilt(sos, r.standard_normal(n)) * 0.006
+    for _ in range(110):
+        pos = int(r.integers(0, n))
+        ln = int(SR * r.uniform(0.001, 0.0035))
+        amp = float(r.uniform(0.004, 0.02)) * (1 if r.random() > 0.5 else -1)
+        click = amp * np.exp(-np.arange(ln) / (ln / 3))
+        idx = (pos + np.arange(ln)) % n
+        ring[idx] += click
+    return ring
+
+
+DUST = dust_ring()
+
+
+def render(events):
+    total = LOOP * 3 + 0.6
     buf = np.zeros((2, int(SR * total)), dtype=np.float64)
     for rep in range(3):
         base = rep * LOOP
-        for step, sample, gain, pan in pattern:
-            place(buf, sample * gain, base + swung(step), pan)
-    # gentle lofi glue: soft saturation + top rolloff
-    buf = np.tanh(buf * 1.15) / 1.15
-    sos = butter(1, 9800, btype="low", fs=SR, output="sos")
-    buf = sosfiltfilt(sos, buf, axis=1)
-    peak = np.max(np.abs(buf)) + 1e-9
-    buf *= 0.82 / peak
-    mid = buf[:, int(SR * LOOP): int(SR * 2 * LOOP)]
+        for step, sample, gain, pan, jitter in events:
+            place(buf, sample * gain, base + swung(step) + jitter, pan)
+    # soft glue + darkness
+    buf = np.tanh(buf * 1.08) / 1.08
+    sos = butter(1, 6400, btype="low", fs=SR, output="sos")
+    dry = sosfiltfilt(sos, buf, axis=1)
+    # baked reverb
+    wet = np.vstack([
+        fftconvolve(dry[0], IR_L)[: dry.shape[1]],
+        fftconvolve(dry[1], IR_R)[: dry.shape[1]],
+    ]) * WET
+    mix = dry + wet
+    peak = np.max(np.abs(mix)) + 1e-9
+    mix *= 0.80 / peak
+    mid = mix[:, int(SR * LOOP): int(SR * 2 * LOOP)].copy()
+    mid[0] += DUST
+    mid[1] += DUST * 0.9
     return mid.astype(np.float32)
 
 
-def pattern_a():
-    ev = []
-    for bar in range(2):
-        o = bar * 16
-        ev += [(o + 0, KICK, 1.0, 0.0), (o + 10, KICK, 0.9, 0.0)]
-        ev += [(o + 4, SNARE, 1.0, 0.0), (o + 12, SNARE, 1.0, 0.0)]
-        for h in range(0, 16, 2):  # 8th hats, alternating accents
-            ev.append((o + h, HAT_C, 1.0 if h % 4 == 0 else 0.62, 0.18))
-        ev += [(o + 7, HAT_C, 0.4, 0.18), (o + 15, HAT_C, 0.4, 0.18)]
-    ev += [(16 + 7, KICK, 0.8, 0.0)]        # bar-2 pickup kick
-    ev += [(16 + 14, HAT_O, 0.8, 0.18)]     # bar-2 open hat
-    return ev
-
-
-def pattern_b():
-    ev = []
-    for bar in range(2):
-        o = bar * 16
-        ev += [(o + 0, KICK, 1.0, 0.0), (o + 7, KICK, 0.85, 0.0), (o + 10, KICK, 0.95, 0.0)]
-        ev += [(o + 4, SNARE, 1.0, 0.0), (o + 12, SNARE, 1.0, 0.0)]
-        ev += [(o + 15, GHOST, 1.0, -0.08)]
-        for h in range(0, 16, 2):
-            ev.append((o + h, HAT_C, 1.0 if h % 4 == 0 else 0.6, 0.18))
-        ev += [(o + 3, HAT_C, 0.38, 0.18), (o + 11, HAT_C, 0.38, 0.18),
-               (o + 14, HAT_O, 0.75, 0.18)]
-        for s in range(0, 16, 4):  # quiet shaker on the beats
-            ev.append((o + s, SHAKER, 0.55, -0.22))
-    ev += [(16 + 3, GHOST, 1.0, -0.08)]     # bar-2 ghost snare
-    return ev
+def stats(audio):
+    mono = audio.mean(axis=0)
+    mag = np.abs(np.fft.rfft(mono * np.hanning(len(mono))))
+    freqs = np.fft.rfftfreq(len(mono), 1 / SR)
+    centroid = float((freqs * mag).sum() / mag.sum())
+    hf = float(mag[freqs > 6000].sum() / mag.sum() * 100)
+    wrap = abs(float(mono[0]) - float(mono[-1]))
+    typical = float(np.percentile(np.abs(np.diff(mono)), 99))
+    return centroid, hf, wrap, typical
 
 
 def save_ogg(audio, name):
     wav = ASSETS / (name + ".wav")
     ogg = ASSETS / (name + ".ogg")
-    import soundfile as sf
     sf.write(wav, audio.T, SR)
     subprocess.run(
         ["ffmpeg", "-y", "-v", "error", "-i", str(wav),
@@ -156,18 +309,16 @@ def save_ogg(audio, name):
         check=True,
     )
     wav.unlink()
-    # seam check: sample-to-sample step across the wrap point
-    mono = audio.mean(axis=0)
-    wrap = abs(float(mono[0]) - float(mono[-1]))
-    typical = float(np.percentile(np.abs(np.diff(mono)), 99))
-    print(f"{name}: {len(mono)/SR:.3f}s  wrap-step {wrap:.4f} (typical max {typical:.4f})")
-    print(f"   -> {ogg} ({ogg.stat().st_size} bytes)")
+    c, hf, wrap, typical = stats(audio)
+    print(f"{name}: centroid {c:.0f} Hz, >6kHz {hf:.1f}%  (target ~1290 Hz / ~5%)")
+    print(f"   seam wrap-step {wrap:.4f} (typical max {typical:.4f}) -> {ogg} ({ogg.stat().st_size} bytes)")
 
 
 def main():
     ASSETS.mkdir(parents=True, exist_ok=True)
-    save_ogg(render(pattern_a()), "beats_a")
-    save_ogg(render(pattern_b()), "beats_b")
+    save_ogg(render(pattern_sparse()), "beats_c")
+    save_ogg(render(pattern_standard()), "beats_a")
+    save_ogg(render(pattern_fuller()), "beats_b")
     print("done.")
 
 
