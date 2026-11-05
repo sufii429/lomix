@@ -227,3 +227,13 @@ mockup first):
 4. **Themes**: Aasmaan (default), iPod Classic, Poweramp Raat —
    one palette object read through composable getters, switched
    from the chips under the header and persisted.
+
+## v1.6.1
+- **New launcher icon**: the "Play + Lehrien" artwork (play button in a
+  vinyl outline over rainbow EQ bars, crescent moon + rain) as an
+  adaptive icon; the PNGs travel as res-b64/ and decode into
+  mipmap-xxxhdpi at build time, like the audio assets.
+- **Tab pills fixed**: unselected pills now take the palette's card
+  colour (they were hardcoded white, which made their light text
+  unreadable in the Raat theme), labels are single-line, and the five
+  pills sit in 3 + 2 rows so nothing wraps mid-word.

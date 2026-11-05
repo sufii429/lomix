@@ -29,6 +29,29 @@ if (assetsB64Dir.isDirectory) {
     }
 }
 
+// --- Launcher icon resources -------------------------------------------------
+// Same base64 route as the audio assets: the launcher-icon PNGs are binary,
+// so they travel as base64 text under res-b64/ (file names encode the target
+// as <res-dir>--<file>.png.b64) and decode into src/main/res at
+// configuration time; the decoded PNGs are git-ignored.
+val resB64Dir = rootProject.file("res-b64")
+if (resB64Dir.isDirectory) {
+    val grouped = resB64Dir.listFiles()
+        ?.filter { it.isFile && it.name.contains(".b64") }
+        ?.groupBy { it.name.substringBefore(".b64") }
+        ?: emptyMap()
+    grouped.forEach { (base, parts) ->
+        val dir = base.substringBefore("--")
+        val name = base.substringAfter("--")
+        val target = file("src/main/res/$dir/$name")
+        if (!target.exists()) {
+            val joined = parts.sortedBy { it.name }.joinToString("") { it.readText() }
+            target.parentFile.mkdirs()
+            target.writeBytes(Base64.getMimeDecoder().decode(joined))
+        }
+    }
+}
+
 // --- Permanent CI debug signing -------------------------------------------
 // GitHub-hosted runners are ephemeral: without this, every build would get a
 // fresh debug key, so a new APK could never install over the previous one.
@@ -56,8 +79,8 @@ android {
         applicationId = "app.lomix.android"
         minSdk = 26
         targetSdk = 34
-        versionCode = 9
-        versionName = "1.6.0"
+        versionCode = 10
+        versionName = "1.6.1"
     }
 
     signingConfigs {

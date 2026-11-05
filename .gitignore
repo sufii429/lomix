@@ -11,3 +11,6 @@ __pycache__/
 
 # Decoded at build time from assets-b64/ (see app/build.gradle.kts)
 app/src/main/assets/*.mp3
+
+# Decoded launcher-icon PNGs (from res-b64/)
+app/src/main/res/mipmap-*/lomix_icon*.png

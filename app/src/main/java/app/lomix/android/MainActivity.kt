@@ -894,13 +894,17 @@ private fun LomixScreen(controller: PlayerController) {
 
             Spacer(Modifier.height(18.dp))
 
-            // Big pill tabs
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                PillTab("Speed", Icons.Filled.Speed, selectedTab == 0, Modifier.weight(1f)) { selectedTab = 0 }
-                PillTab("Lofi Rang", Icons.Filled.GraphicEq, selectedTab == 1, Modifier.weight(1f)) { selectedTab = 1 }
-                PillTab("Mahaul", Icons.Filled.WaterDrop, selectedTab == 2, Modifier.weight(1f)) { selectedTab = 2 }
-                PillTab("Hissay", Icons.Filled.LibraryMusic, selectedTab == 3, Modifier.weight(1f)) { selectedTab = 3 }
-                PillTab("Playlists", Icons.Filled.QueueMusic, selectedTab == 4, Modifier.weight(1f)) { selectedTab = 4 }
+            // Big pill tabs — 3 + 2 rows, so every label fits on one line
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PillTab("Speed", Icons.Filled.Speed, selectedTab == 0, Modifier.weight(1f)) { selectedTab = 0 }
+                    PillTab("Lofi Rang", Icons.Filled.GraphicEq, selectedTab == 1, Modifier.weight(1f)) { selectedTab = 1 }
+                    PillTab("Mahaul", Icons.Filled.WaterDrop, selectedTab == 2, Modifier.weight(1f)) { selectedTab = 2 }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PillTab("Hissay", Icons.Filled.LibraryMusic, selectedTab == 3, Modifier.weight(1f)) { selectedTab = 3 }
+                    PillTab("Playlists", Icons.Filled.QueueMusic, selectedTab == 4, Modifier.weight(1f)) { selectedTab = 4 }
+                }
             }
 
             Spacer(Modifier.height(14.dp))
@@ -1196,7 +1200,7 @@ private fun PillTab(
         modifier = modifier
             .height(54.dp)
             .clip(RoundedCornerShape(50))
-            .background(if (selected) AccentBlue else Color.White)
+            .background(if (selected) AccentBlue else CardSurface)
             .border(1.dp, if (selected) AccentBlue else CardBorder, RoundedCornerShape(50))
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
@@ -1213,6 +1217,7 @@ private fun PillTab(
                 label,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.Bold,
+                maxLines = 1,
                 color = if (selected) Color.White else Ink
             )
         }
