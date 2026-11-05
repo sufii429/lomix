@@ -39,6 +39,12 @@ phase-2 (ffmpeg) step if it is ever wanted.
   a dense metallic patter (tin-roof rain), `rain_tin.mp3`.
 - **Cassette** — a fifth lofi effect: soft tape hiss (`tape_hiss.mp3`)
   plus a gentle pitch wobble (±0.4%, 5 s period) on the song.
+- **Permanent signing key** — debug builds are signed with the project's
+  own keystore (`debug-keystore.b64` in the repo root, decoded by
+  `app/build.gradle.kts`, stable SHA-1
+  45:0E:61:FD:CA:5F:9F:0A:E1:33:89:11:A3:E6:50:74:B3:42:87:DD), so every
+  update installs on top of the previous one. (v1.0 was signed by the CI
+  runner's one-off key, so moving to v1.1 needs a single uninstall first.)
 
 ## Build & install
 

@@ -29,6 +29,25 @@ if (assetsB64Dir.isDirectory) {
     }
 }
 
+// --- Permanent CI debug signing -------------------------------------------
+// GitHub-hosted runners are ephemeral: without this, every build would get a
+// fresh debug key, so a new APK could never install over the previous one.
+// The repo carries Lomix's own debug keystore as base64 (debug-keystore.b64
+// at the project root — the standard public debug credentials, not a
+// secret). Decode it once per build and sign the debug variant with it, so
+// the signature is stable forever and updates install on top.
+// Stable SHA-1: 45:0E:61:FD:CA:5F:9F:0A:E1:33:89:11:A3:E6:50:74:B3:42:87:DD
+val ciDebugKeystore: File? = run {
+    val b64 = rootProject.file("debug-keystore.b64")
+    if (!b64.exists()) return@run null
+    val out = layout.buildDirectory.file("ci-debug.keystore").get().asFile
+    if (!out.exists()) {
+        out.parentFile.mkdirs()
+        out.writeBytes(Base64.getMimeDecoder().decode(b64.readText()))
+    }
+    out
+}
+
 android {
     namespace = "app.lomix.android"
     compileSdk = 34
@@ -41,7 +60,23 @@ android {
         versionName = "1.1.0"
     }
 
+    signingConfigs {
+        if (ciDebugKeystore != null) {
+            create("ciDebug") {
+                storeFile = ciDebugKeystore
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
+    }
+
     buildTypes {
+        debug {
+            if (ciDebugKeystore != null) {
+                signingConfig = signingConfigs.getByName("ciDebug")
+            }
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(
