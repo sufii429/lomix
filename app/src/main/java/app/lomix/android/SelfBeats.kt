@@ -152,7 +152,9 @@ object SelfBeats {
             val c = t.toInt()
             val vals = mutableListOf<Double>()
             for (b in (c - 2)..(c + 2)) if (b in blockMedian.indices) vals.add(blockMedian[b])
-            return if (vals.isEmpty()) 1e-6 else median(vals.toFloatArray())
+            if (vals.isEmpty()) return 1e-6
+            vals.sort()
+            return vals[vals.size / 2]
         }
 
         val peakWin = (0.09 * SR).toInt()
