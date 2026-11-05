@@ -9,7 +9,9 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -36,11 +38,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Album
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.LibraryMusic
+import androidx.compose.material.icons.filled.LocalCafe
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.NightsStay
 import androidx.compose.material.icons.filled.Opacity
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -52,6 +58,7 @@ import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.WaterDrop
+import androidx.compose.material.icons.filled.Waves
 import androidx.compose.material.icons.filled.Whatshot
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -69,10 +76,10 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -88,7 +95,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
-import androidx.media3.common.Player
 import kotlinx.coroutines.delay
 
 // Approved palette (light, lively sky theme from the design mockup).
@@ -164,6 +170,8 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun LomixScreen(controller: PlayerController) {
     val context = LocalContext.current
+    val appCtx = context.applicationContext
+    val mainHandler = remember { Handler(Looper.getMainLooper()) }
 
     // ---- UI state (starting values come from the controller, which keeps
     // the mix while the Activity is gone) ----------------------------------
@@ -183,20 +191,28 @@ private fun LomixScreen(controller: PlayerController) {
     var vinyl by remember { mutableStateOf(controller.vinylOn) }
     var cassette by remember { mutableStateOf(controller.cassetteOn) }
 
-    var beatsOn by remember { mutableStateOf(controller.beatsOn) }
-    var beatsStyle by remember { mutableStateOf(controller.beatsStyle) }
-    var beatsVolume by remember { mutableIntStateOf(controller.beatsVolumePercent) }
-    var bpmAdjust by remember { mutableDoubleStateOf(controller.bpmAdjust) }
-    var beatsBpm by remember { mutableStateOf(controller.beatInfo?.bpm) }
-    var beatsDetecting by remember { mutableStateOf(controller.beatsDetecting) }
-    var beatsSource by remember { mutableStateOf(controller.beatsSource) }
-    var selfBeatsState by remember { mutableStateOf(controller.selfBeatsState) }
-    // Same guard as the sleep timer: the poll adopts the controller's
-    // adjust only when it changed on its own (a new song resets it to 0).
-    var lastBeatsAdjustPushed by remember { mutableDoubleStateOf(controller.bpmAdjust) }
-
     var rainChoice by remember { mutableStateOf(controller.rainChoice) }
     var rainVolume by remember { mutableIntStateOf(controller.rainVolumePercent) }
+
+    // Ambient layers (v1.4): per-sound switch + volume.
+    val ambientOn = remember {
+        mutableStateMapOf<AmbientSound, Boolean>().apply {
+            AmbientSound.values().forEach { put(it, controller.ambientOn(it)) }
+        }
+    }
+    val ambientVol = remember {
+        mutableStateMapOf<AmbientSound, Int>().apply {
+            AmbientSound.values().forEach { put(it, controller.ambientVolume(it)) }
+        }
+    }
+
+    // Tayyar ganay (stems, v1.4).
+    var stemSets by remember { mutableStateOf(StemStore.loadSets(appCtx)) }
+    var activeStemId by remember { mutableStateOf(controller.stemSet?.id) }
+    var stemStatus by remember { mutableStateOf("") }
+    val stemVolumes = remember {
+        mutableStateMapOf<StemKind, Int>().apply { putAll(controller.stemVolumes) }
+    }
 
     var sleepMinutes by remember { mutableIntStateOf(controller.sleepMinutes) }
     var sleepRemainingMs by remember { mutableLongStateOf(controller.sleepRemainingMs) }
@@ -207,7 +223,10 @@ private fun LomixScreen(controller: PlayerController) {
 
     var selectedTab by remember { mutableIntStateOf(0) }
 
-    val hasSong = songUri != null
+    val stemMode = activeStemId != null
+    val hasSource = songUri != null || stemMode
+    val activeStemSet = stemSets.firstOrNull { it.id == activeStemId }
+    val displayTitle = if (stemMode) (activeStemSet?.name ?: "Tayyar Gana") else songName
 
     // ---- Song picker ----------------------------------------------------
     val picker = rememberLauncherForActivityResult(
@@ -220,14 +239,40 @@ private fun LomixScreen(controller: PlayerController) {
                 )
             } catch (e: Exception) {
                 // Some providers don't offer persistable grants; the URI
-                // still works for this session, which is enough for v1.
+                // still works for this session, which is enough.
             }
             val name = queryDisplayName(context, uri) ?: "Picked song"
             songName = name
             songUri = uri
+            activeStemId = null
             isPlaying = false
             positionMs = 0L
             controller.setSong(uri, name)
+        }
+    }
+
+    // ---- Tayyar gana (zip) picker ----------------------------------------
+    val zipPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            stemStatus = "Zip khul raha hai…"
+            val zipName = queryDisplayName(context, uri) ?: "Tayyar Gana"
+            Thread {
+                val set = StemStore.importZip(appCtx, uri, zipName)
+                mainHandler.post {
+                    if (set != null) {
+                        stemSets = StemStore.loadSets(appCtx)
+                        controller.setStemSet(set)
+                        activeStemId = set.id
+                        isPlaying = false
+                        positionMs = 0L
+                        stemStatus = ""
+                    } else {
+                        stemStatus = "Is zip mein hisse nahi mile — MVSEP wala zip chunein"
+                    }
+                }
+            }.start()
         }
     }
 
@@ -237,45 +282,34 @@ private fun LomixScreen(controller: PlayerController) {
     LaunchedEffect(rainChoice, rainVolume) { controller.applyRain(rainChoice, rainVolume) }
     LaunchedEffect(vinyl) { controller.applyVinyl(vinyl) }
     LaunchedEffect(cassette) { controller.applyCassette(cassette) }
-    LaunchedEffect(beatsOn, beatsStyle, beatsVolume, bpmAdjust, beatsSource) {
-        lastBeatsAdjustPushed = bpmAdjust
-        controller.applyBeats(beatsOn, beatsStyle, beatsVolume, bpmAdjust, beatsSource)
-    }
     LaunchedEffect(sleepMinutes) {
         lastSleepPushed = sleepMinutes
         controller.applySleepTimer(sleepMinutes)
     }
     LaunchedEffect(isPlaying) {
-        if (hasSong) {
+        if (hasSource) {
             if (isPlaying) controller.playAll() else controller.pauseAll()
         }
     }
 
     // ---- Progress polling ------------------------------------------------
-    LaunchedEffect(songUri) {
+    LaunchedEffect(Unit) {
         while (true) {
-            val p = controller.songPlayer
-            durationMs = if (p.duration > 0) p.duration else 0L
-            positionMs = p.currentPosition.coerceAtLeast(0L)
-            if (p.playbackState == Player.STATE_ENDED) {
-                controller.onSongEnded()
+            durationMs = controller.activeDurationMs()
+            positionMs = controller.activePositionMs()
+            if (controller.activeEnded()) {
+                controller.onActiveEnded()
                 positionMs = 0L
             }
             // Keep the UI in step with changes made from the notification
             // (Play/Pause there, or the sleep timer firing).
             isPlaying = controller.isPlaying
+            activeStemId = controller.stemSet?.id
             if (controller.sleepMinutes != lastSleepPushed) {
                 sleepMinutes = controller.sleepMinutes
                 lastSleepPushed = controller.sleepMinutes
             }
             sleepRemainingMs = controller.sleepRemainingMs
-            beatsBpm = controller.beatInfo?.bpm
-            beatsDetecting = controller.beatsDetecting
-            selfBeatsState = controller.selfBeatsState
-            if (controller.bpmAdjust != lastBeatsAdjustPushed) {
-                bpmAdjust = controller.bpmAdjust
-                lastBeatsAdjustPushed = controller.bpmAdjust
-            }
             delay(500)
         }
     }
@@ -287,8 +321,8 @@ private fun LomixScreen(controller: PlayerController) {
         if (geela) "Geela" else null,
         if (vinyl) "Vinyl" else null,
         if (cassette) "Cassette" else null,
-        if (beatsOn) "Beats " + beatsStyleLabel(beatsStyle) else null
-    )
+        if (stemMode) "Hissay" else null
+    ) + AmbientSound.values().filter { ambientOn[it] == true }.map { it.label }
     val mixText = buildString {
         append("%.2f".format(speed)).append("x · ")
         append(if (fxNames.isEmpty()) "FX off" else fxNames.joinToString(" + "))
@@ -352,7 +386,7 @@ private fun LomixScreen(controller: PlayerController) {
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            songName,
+                            displayTitle,
                             fontSize = 16.sp,
                             fontWeight = FontWeight.Bold,
                             color = Ink,
@@ -360,7 +394,8 @@ private fun LomixScreen(controller: PlayerController) {
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            if (hasSong) "Ready — set the mix and press play"
+                            if (stemMode) "Tayyar gana — har hissa alag control mein"
+                            else if (hasSource) "Ready — set the mix and press play"
                             else "Pick a song from your phone to begin",
                             fontSize = 12.sp,
                             color = MutedInk
@@ -370,7 +405,7 @@ private fun LomixScreen(controller: PlayerController) {
                     OutlinedButton(onClick = { picker.launch(arrayOf("audio/*")) }) {
                         Icon(Icons.Filled.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
-                        Text(if (hasSong) "Change" else "Pick")
+                        Text(if (songUri != null) "Change" else "Pick")
                     }
                 }
 
@@ -382,8 +417,8 @@ private fun LomixScreen(controller: PlayerController) {
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Button(
-                        onClick = { if (hasSong) isPlaying = !isPlaying },
-                        enabled = hasSong,
+                        onClick = { if (hasSource) isPlaying = !isPlaying },
+                        enabled = hasSource,
                         shape = CircleShape,
                         colors = ButtonDefaults.buttonColors(containerColor = AccentBlue),
                         contentPadding = PaddingValues(0.dp),
@@ -405,11 +440,11 @@ private fun LomixScreen(controller: PlayerController) {
                         onValueChange = { scrubFraction = it },
                         onValueChangeFinished = {
                             val target = ((scrubFraction ?: 0f) * durationMs).toLong()
-                            controller.songPlayer.seekTo(target)
+                            controller.seekActive(target)
                             positionMs = target
                             scrubFraction = null
                         },
-                        enabled = hasSong && durationMs > 0,
+                        enabled = hasSource && durationMs > 0,
                         colors = SliderDefaults.colors(
                             thumbColor = AccentBlue,
                             activeTrackColor = AccentBlue
@@ -465,8 +500,8 @@ private fun LomixScreen(controller: PlayerController) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 PillTab("Speed", Icons.Filled.Speed, selectedTab == 0, Modifier.weight(1f)) { selectedTab = 0 }
                 PillTab("Lofi Rang", Icons.Filled.GraphicEq, selectedTab == 1, Modifier.weight(1f)) { selectedTab = 1 }
-                PillTab("Beats", Icons.Filled.MusicNote, selectedTab == 2, Modifier.weight(1f)) { selectedTab = 2 }
-                PillTab("Baarish", Icons.Filled.WaterDrop, selectedTab == 3, Modifier.weight(1f)) { selectedTab = 3 }
+                PillTab("Mahaul", Icons.Filled.WaterDrop, selectedTab == 2, Modifier.weight(1f)) { selectedTab = 2 }
+                PillTab("Hissay", Icons.Filled.LibraryMusic, selectedTab == 3, Modifier.weight(1f)) { selectedTab = 3 }
             }
 
             Spacer(Modifier.height(14.dp))
@@ -494,27 +529,62 @@ private fun LomixScreen(controller: PlayerController) {
                                 }
                             }
                         )
-                        2 -> BeatsPanel(
-                            on = beatsOn,
-                            style = beatsStyle,
-                            volume = beatsVolume,
-                            bpm = beatsBpm,
-                            detecting = beatsDetecting,
-                            adjust = bpmAdjust,
-                            hasSong = hasSong,
-                            source = beatsSource,
-                            selfState = selfBeatsState,
-                            onToggle = { beatsOn = !beatsOn },
-                            onStyle = { beatsStyle = it },
-                            onVolume = { beatsVolume = it },
-                            onAdjust = { bpmAdjust = it },
-                            onSource = { beatsSource = it }
-                        )
-                        else -> RainPanel(
+                        2 -> MahaulPanel(
                             choice = rainChoice,
                             volume = rainVolume,
                             onChoice = { rainChoice = it },
-                            onVolume = { rainVolume = it }
+                            onVolume = { rainVolume = it },
+                            ambientOn = ambientOn,
+                            ambientVol = ambientVol,
+                            onAmbientToggle = { sound ->
+                                val now = !(ambientOn[sound] ?: false)
+                                ambientOn[sound] = now
+                                controller.applyAmbient(sound, now, ambientVol[sound] ?: 50)
+                            },
+                            onAmbientVolume = { sound, vol ->
+                                ambientVol[sound] = vol
+                                controller.applyAmbient(sound, ambientOn[sound] ?: false, vol)
+                            }
+                        )
+                        else -> HissayPanel(
+                            sets = stemSets,
+                            activeId = activeStemId,
+                            volumes = stemVolumes,
+                            status = stemStatus,
+                            onPickZip = {
+                                zipPicker.launch(
+                                    arrayOf(
+                                        "application/zip",
+                                        "application/x-zip-compressed",
+                                        "application/octet-stream"
+                                    )
+                                )
+                            },
+                            onLoad = { set ->
+                                controller.setStemSet(set)
+                                activeStemId = set.id
+                                isPlaying = false
+                                positionMs = 0L
+                            },
+                            onUnload = {
+                                controller.setStemSet(null)
+                                activeStemId = null
+                                isPlaying = false
+                                positionMs = 0L
+                            },
+                            onDelete = { set ->
+                                if (set.id == activeStemId) {
+                                    controller.setStemSet(null)
+                                    activeStemId = null
+                                    isPlaying = false
+                                }
+                                StemStore.delete(appCtx, set)
+                                stemSets = StemStore.loadSets(appCtx)
+                            },
+                            onVolume = { kind, vol ->
+                                stemVolumes[kind] = vol
+                                controller.applyStemVolume(kind, vol)
+                            }
                         )
                     }
                 }
@@ -683,7 +753,115 @@ private fun FxToggleCard(
 }
 
 @Composable
-private fun RainPanel(
+private fun MahaulPanel(
+    choice: RainChoice,
+    volume: Int,
+    onChoice: (RainChoice) -> Unit,
+    onVolume: (Int) -> Unit,
+    ambientOn: Map<AmbientSound, Boolean>,
+    ambientVol: Map<AmbientSound, Int>,
+    onAmbientToggle: (AmbientSound) -> Unit,
+    onAmbientVolume: (AmbientSound, Int) -> Unit
+) {
+    Column {
+        Text("Baarish", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Ink)
+        Spacer(Modifier.height(8.dp))
+        RainOptions(choice, volume, onChoice, onVolume)
+        Spacer(Modifier.height(18.dp))
+        Text("Aur mahaul ki awazein", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Ink)
+        Text(
+            "Ye awazein bhi ganay ke neeche loop par chalti hain — kai aik saath bhi chal sakti hain.",
+            fontSize = 12.sp,
+            color = MutedInk
+        )
+        Spacer(Modifier.height(10.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            AmbientLayerRow(
+                "Aag", "Angeethi ki karhk — cozy mahaul", Icons.Filled.Whatshot,
+                ambientOn[AmbientSound.FIRE] ?: false, ambientVol[AmbientSound.FIRE] ?: 50,
+                { onAmbientToggle(AmbientSound.FIRE) },
+                { onAmbientVolume(AmbientSound.FIRE, it) }
+            )
+            AmbientLayerRow(
+                "Lehrein", "Samundar ki sust lehrein", Icons.Filled.Waves,
+                ambientOn[AmbientSound.OCEAN] ?: false, ambientVol[AmbientSound.OCEAN] ?: 50,
+                { onAmbientToggle(AmbientSound.OCEAN) },
+                { onAmbientVolume(AmbientSound.OCEAN, it) }
+            )
+            AmbientLayerRow(
+                "Jhingur", "Raat ke jhingur aur halki hawa", Icons.Filled.NightsStay,
+                ambientOn[AmbientSound.CRICKETS] ?: false, ambientVol[AmbientSound.CRICKETS] ?: 50,
+                { onAmbientToggle(AmbientSound.CRICKETS) },
+                { onAmbientVolume(AmbientSound.CRICKETS, it) }
+            )
+            AmbientLayerRow(
+                "Café", "Halka café mahaul, bartanou ki khanak", Icons.Filled.LocalCafe,
+                ambientOn[AmbientSound.CAFE] ?: false, ambientVol[AmbientSound.CAFE] ?: 50,
+                { onAmbientToggle(AmbientSound.CAFE) },
+                { onAmbientVolume(AmbientSound.CAFE, it) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun AmbientLayerRow(
+    name: String,
+    description: String,
+    icon: ImageVector,
+    on: Boolean,
+    volume: Int,
+    onToggle: () -> Unit,
+    onVolume: (Int) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(if (on) SelectedTint else IdleTint)
+            .padding(14.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().clickable(onClick = onToggle),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(if (on) AccentBlue else Color.White),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(icon, contentDescription = null, tint = if (on) Color.White else AccentBlue, modifier = Modifier.size(21.dp))
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(name, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Ink)
+                Text(description, fontSize = 12.sp, color = MutedInk)
+            }
+            Switch(checked = on, onCheckedChange = { onToggle() })
+        }
+        if (on) {
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.VolumeUp, contentDescription = null, tint = MutedInk, modifier = Modifier.size(17.dp))
+                Spacer(Modifier.width(8.dp))
+                Slider(
+                    value = volume.toFloat(),
+                    onValueChange = { onVolume(it.toInt()) },
+                    valueRange = 0f..100f,
+                    colors = SliderDefaults.colors(thumbColor = AccentBlue, activeTrackColor = AccentBlue),
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("$volume%", fontSize = 12.sp, color = MutedInk)
+            }
+        }
+    }
+}
+
+@Composable
+private fun RainOptions(
     choice: RainChoice,
     volume: Int,
     onChoice: (RainChoice) -> Unit,
@@ -743,116 +921,96 @@ private fun RainOption(
 }
 
 @Composable
-private fun BeatsPanel(
-    on: Boolean,
-    style: BeatsStyle,
-    volume: Int,
-    bpm: Double?,
-    detecting: Boolean,
-    adjust: Double,
-    hasSong: Boolean,
-    source: BeatsSource,
-    selfState: SelfBeatsState,
-    onToggle: () -> Unit,
-    onStyle: (BeatsStyle) -> Unit,
-    onVolume: (Int) -> Unit,
-    onAdjust: (Double) -> Unit,
-    onSource: (BeatsSource) -> Unit
+private fun HissayPanel(
+    sets: List<StemSet>,
+    activeId: String?,
+    volumes: Map<StemKind, Int>,
+    status: String,
+    onPickZip: () -> Unit,
+    onLoad: (StemSet) -> Unit,
+    onUnload: () -> Unit,
+    onDelete: (StemSet) -> Unit,
+    onVolume: (StemKind, Int) -> Unit
 ) {
+    val active = sets.firstOrNull { it.id == activeId }
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        FxToggleCard(
-            "Beats", "Khud sync honay walay lofi drums, ganay ke neeche",
-            Icons.Filled.MusicNote, on
-        ) { onToggle() }
-
-        val status = when {
-            !hasSong -> "Pehle gana chunein — phir taal khud dhoondhi jayegi"
-            detecting -> "Taal dhoond raha hai… chand second lag sakte hain"
-            bpm != null -> "Taal mil gayi: %.1f BPM — beats khud sync hain".format((bpm ?: 0.0) + adjust)
-            else -> "Taal khud nahi mili — neeche se BPM haath se theek karein"
-        }
-        Text(status, fontSize = 12.sp, color = MutedInk)
-
-        Text("Beats ka source", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Ink)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            BeatsChip("App wali", source == BeatsSource.BUILTIN) { onSource(BeatsSource.BUILTIN) }
-            BeatsChip("Ganay ki apni", source == BeatsSource.SELF) { onSource(BeatsSource.SELF) }
-        }
-        if (source == BeatsSource.SELF) {
-            val selfStatus = when (selfState) {
-                SelfBeatsState.BUILDING -> "Is ganay ke drum se beats bana raha hai…"
-                SelfBeatsState.READY -> "Ye beats isi ganay ke apne drum se bani hain"
-                SelfBeatsState.MISSING -> "Is ganay mein saaf drum nahi mile — App wali beats chalengi"
-                SelfBeatsState.IDLE -> "Gana chunein — phir usi ke drum se beats banengi"
-            }
-            Text(selfStatus, fontSize = 12.sp, color = MutedInk)
-        }
-
-        Text("Style", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Ink)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            BeatsChip("Balanced", style == BeatsStyle.BALANCED) { onStyle(BeatsStyle.BALANCED) }
-            BeatsChip("Warm", style == BeatsStyle.WARM) { onStyle(BeatsStyle.WARM) }
-            BeatsChip("Bass Boost", style == BeatsStyle.BASS_BOOST) { onStyle(BeatsStyle.BASS_BOOST) }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            BeatsChip("Smooth", style == BeatsStyle.SMOOTH) { onStyle(BeatsStyle.SMOOTH) }
-            BeatsChip("Dynamic", style == BeatsStyle.DYNAMIC) { onStyle(BeatsStyle.DYNAMIC) }
-        }
-
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Filled.VolumeUp, contentDescription = null, tint = MutedInk, modifier = Modifier.size(19.dp))
-            Spacer(Modifier.width(8.dp))
-            Text("Beats ki awaz", fontSize = 13.sp, color = Ink, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.weight(1f))
-            Text("$volume%", fontSize = 13.sp, color = MutedInk)
-        }
-        Slider(
-            value = volume.toFloat(),
-            onValueChange = { onVolume(it.toInt()) },
-            valueRange = 0f..100f,
-            colors = SliderDefaults.colors(thumbColor = AccentBlue, activeTrackColor = AccentBlue),
-            modifier = Modifier.fillMaxWidth()
-        )
-
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Taal theek karein", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Ink)
-            Spacer(Modifier.weight(1f))
-            OutlinedButton(
-                onClick = { onAdjust(adjust - 0.5) },
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
-            ) { Text("−") }
-            Spacer(Modifier.width(8.dp))
-            Text("%.1f".format((bpm ?: 90.0) + adjust), fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Ink)
-            Spacer(Modifier.width(8.dp))
-            OutlinedButton(
-                onClick = { onAdjust(adjust + 0.5) },
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
-            ) { Text("+") }
-        }
         Text(
-            "Agar beats ganay se aage ya peeche lagein to − / + se taal mila lein. Speed badalne par beats khud nayi speed se mil jati hain.",
+            "Jo gana MVSEP se torr kar zip banaya ho, woh yahan chunein. Har hissa alag slider se kam ya zyada hoga — bilkul Audio Eraser ki tarah.",
             fontSize = 12.sp,
             color = MutedInk
         )
-    }
-}
-
-@Composable
-private fun BeatsChip(label: String, active: Boolean, onClick: () -> Unit) {
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(50))
-            .background(if (active) AccentBlue else IdleTint)
-            .border(1.dp, if (active) AccentBlue else CardBorder, RoundedCornerShape(50))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 7.dp)
-    ) {
-        Text(
-            label,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Bold,
-            color = if (active) Color.White else Ink
-        )
+        OutlinedButton(onClick = onPickZip, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.Filled.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("MVSEP zip chunein")
+        }
+        if (status.isNotEmpty()) {
+            Text(status, fontSize = 12.sp, color = MutedInk)
+        }
+        sets.forEach { set ->
+            val isActive = set.id == activeId
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(if (isActive) SelectedTint else IdleTint)
+                    .clickable { onLoad(set) }
+                    .padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Filled.LibraryMusic,
+                    contentDescription = null,
+                    tint = AccentBlue,
+                    modifier = Modifier.size(22.dp)
+                )
+                Spacer(Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(set.name, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Ink)
+                    Text(
+                        if (isActive) "Chal raha hai · ${set.stems.size} hisse" else "${set.stems.size} hisse",
+                        fontSize = 12.sp,
+                        color = if (isActive) AccentBlue else MutedInk
+                    )
+                }
+                Icon(
+                    Icons.Filled.Delete,
+                    contentDescription = "Delete",
+                    tint = MutedInk,
+                    modifier = Modifier
+                        .size(20.dp)
+                        .clickable { onDelete(set) }
+                )
+            }
+        }
+        if (active != null) {
+            Spacer(Modifier.height(4.dp))
+            Text("Hissou ki awaz", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Ink)
+            StemKind.values().filter { active.stems.containsKey(it) }.forEach { kind ->
+                val vol = volumes[kind] ?: 100
+                Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(kind.label, fontSize = 13.sp, color = Ink, modifier = Modifier.weight(1f))
+                        Text("$vol%", fontSize = 12.sp, color = MutedInk)
+                    }
+                    Slider(
+                        value = vol.toFloat(),
+                        onValueChange = { onVolume(kind, it.toInt()) },
+                        valueRange = 0f..150f,
+                        colors = SliderDefaults.colors(thumbColor = AccentBlue, activeTrackColor = AccentBlue),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+            OutlinedButton(onClick = onUnload, modifier = Modifier.fillMaxWidth()) {
+                Text("Tayyar gana band karein")
+            }
+            Text(
+                "Speed, Lofi Rang aur Mahaul — sab is par bhi chalte hain.",
+                fontSize = 12.sp,
+                color = MutedInk
+            )
+        }
     }
 }
 

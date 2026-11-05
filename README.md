@@ -155,3 +155,29 @@ song), the state shows MISSING and the bundled loops keep playing.
 The decoded PCM is kept per song so switching source or style
 rebuilds without a second decode. Next on Mazeen's list: in-app drum
 pads (noted 2026-11-05).
+
+## v1.4.0 — beats out, Mahaul tab, tayyar gana (stems)
+
+Three changes in one build, on Mazeen's calls of 2026-11-05:
+
+1. **Beats removed.** Three attempts (synthesized loops, a kit sampled
+   from the reference song, per-song self-beats) all synced correctly
+   and none satisfied — the sound never belonged to the song. The tab
+   and playback are gone; the mechanism (BeatDetector, SelfBeats,
+   BeatsFx) stays parked in the codebase for future sync use.
+2. **Mahaul tab.** The old Baarish tab grew into an ambient-sounds tab:
+   rain choices on top, and below them four more looping layers, each
+   with its own switch + volume and combinable — Aag (fireplace),
+   Lehrein (ocean), Jhingur (night crickets + breeze), Café. All four
+   are synthesized by `make_ambience.py` (periodic by construction, so
+   the 60 s loops are seamless) and travel as `amb_*.mp3.b64` assets.
+3. **Tayyar gana (stems).** Mazeen separates songs himself with MVSEP
+   (BS Roformer SW: vocals, bass, drums, guitar, piano, other +
+   instrum); the new Hissay tab imports the MVSEP zip (StemStore
+   classifies files by the token at the end of each name, and drops
+   the "instrum" stem when the detailed music stems exist). Each stem
+   plays on its own player with its own copy of the lofi effects; a
+   500 ms ticker keeps every stem aligned to the master (vocals) —
+   the parked sync idea, reused where it belongs. Per-stem volume
+   sliders (0–150%) work like Samsung's Audio Eraser. Speed, Lofi
+   Rang, Mahaul and the sleep timer all apply to stem playback too.

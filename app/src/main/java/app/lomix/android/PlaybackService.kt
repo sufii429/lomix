@@ -75,7 +75,7 @@ class PlaybackService : Service() {
     }
 
     private fun buildNotification(): Notification {
-        val hasSong = ::controller.isInitialized && controller.songUri != null
+        val hasSong = ::controller.isInitialized && controller.hasActiveSource
         val playing = ::controller.isInitialized && controller.isPlaying
 
         val openIntent = PendingIntent.getActivity(
@@ -97,7 +97,7 @@ class PlaybackService : Service() {
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setContentTitle(
-                if (hasSong) controller.songName else "Lomix"
+                if (hasSong) controller.activeTitle else "Lomix"
             )
             .setContentText(
                 if (hasSong) controller.mixSummary() else "Gana chunein aur mix banayein"
